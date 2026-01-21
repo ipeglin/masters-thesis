@@ -1,3 +1,5 @@
+pub mod annex;
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
