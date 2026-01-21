@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/cli",
+  "crates/config",
+  "crates/tcp_preprocess",
+]
+
+[workspace.dependencies]
+anyhow = "1"
+polars  = { version = "0.52.0", features = ["csv", "lazy", "timezones"] }
+polars-io = "0.52.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] } # Only binary (cli) needs tracing-subscriber
+toml = "0.8"
