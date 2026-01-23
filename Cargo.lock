@@ -404,7 +404,7 @@ dependencies = [
  "anyhow",
  "clap",
  "config",
- "tcp_preprocess",
+ "tcp_subject_selection",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2915,7 +2915,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tcp_preprocess"
+name = "tcp_subject_selection"
 version = "0.1.0"
 dependencies = [
  "anyhow",

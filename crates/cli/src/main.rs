@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use config::{AppConfig, TCPPreprocessConfig, load_config};
+use config::{AppConfig, TCPSubjectSelectionConfig, load_config};
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
@@ -21,10 +21,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    TCPPreprocess {
-        #[arg(long)]
-        fmri_dir: Option<PathBuf>,
-
+    TCPSelectSubjects {
         #[arg(long)]
         tcp_dir: Option<PathBuf>,
 
@@ -47,23 +44,19 @@ fn main() -> Result<()> {
         .init();
 
     let cfg = load_config(&cli.config).unwrap_or_else(|_| AppConfig {
-        tcp_preprocess: TCPPreprocessConfig::default(),
+        tcp_subject_selection: TCPSubjectSelectionConfig::default(),
     });
 
     match cli.cmd {
-        Command::TCPPreprocess {
-            fmri_dir,
+        Command::TCPSelectSubjects {
             tcp_dir,
             output_dir,
             filters,
             dry_run,
         } => {
             // I/O config
-            let mut p = cfg.tcp_preprocess;
+            let mut p = cfg.tcp_subject_selection;
 
-            if let Some(v) = fmri_dir {
-                p.fmri_dir = v
-            };
             if let Some(v) = tcp_dir {
                 p.tcp_dir = v
             };
@@ -83,7 +76,7 @@ fn main() -> Result<()> {
                 p.dry_run = v
             };
 
-            tcp_preprocess::run(&p)
+            tcp_subject_selection::run(&p)
         }
     }
 }

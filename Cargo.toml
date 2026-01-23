@@ -3,7 +3,7 @@ resolver = "2"
 members = [
   "crates/cli",
   "crates/config",
-  "crates/tcp_preprocess",
+  "crates/tcp_subject_selection",
 ]
 
 [workspace.dependencies]

@@ -9,12 +9,11 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default)]
-    pub tcp_preprocess: TCPPreprocessConfig,
+    pub tcp_subject_selection: TCPSubjectSelectionConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TCPPreprocessConfig {
-    pub fmri_dir: PathBuf,
+pub struct TCPSubjectSelectionConfig {
     pub tcp_dir: PathBuf,
     pub tcp_annex_remote: String,
     pub output_dir: PathBuf,
@@ -24,10 +23,9 @@ pub struct TCPPreprocessConfig {
     pub dry_run: bool,
 }
 
-impl Default for TCPPreprocessConfig {
+impl Default for TCPSubjectSelectionConfig {
     fn default() -> Self {
         Self {
-            fmri_dir: PathBuf::from("/path/to/fmri"),
             tcp_dir: PathBuf::from("/path/to/tcp"),
             tcp_annex_remote: String::from(""),
             output_dir: PathBuf::from("/path/to/output"),
@@ -37,10 +35,9 @@ impl Default for TCPPreprocessConfig {
     }
 }
 
-impl fmt::Display for TCPPreprocessConfig {
+impl fmt::Display for TCPSubjectSelectionConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "TPC Preprocessing:")?;
-        writeln!(f, "  fMRI Dir: {}", self.fmri_dir.display())?;
         writeln!(f, "  TCP Dir: {}", self.tcp_dir.display())?;
         writeln!(f, "  Output Dir: {}", self.output_dir.display())?;
 
