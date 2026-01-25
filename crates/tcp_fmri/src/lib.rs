@@ -13,7 +13,7 @@ pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
     let filter_dir = &cfg.filter_dir;
 
     // Filter files
-    let filtered_subjects = vec![
+    let filtered_subjects = [
         filter_dir.join("healthy_controls.csv"),
         filter_dir.join("low_anhedonic.csv"),
         filter_dir.join("high_anhedonic.csv"),
