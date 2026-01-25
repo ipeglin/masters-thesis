@@ -5,8 +5,11 @@ edition = "2024"
 
 [dependencies]
 git2 = "0.18"
+hdf5 = "0.8"
 
 anyhow = { workspace = true }
+ndarray = { workspace = true }
+nifti = { workspace = true }
 polars = { workspace = true }
 polars-io = { workspace = true }
 serde = { workspace = true }
@@ -15,3 +18,4 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 config = { path = "../config" }
+nifti_masker = { path = "../nifti_masker" }

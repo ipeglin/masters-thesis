@@ -5,10 +5,13 @@ members = [
   "crates/config",
   "crates/tcp_subject_selection",
   "crates/tcp_fmri",
+  "crates/nifti_masker"
 ]
 
 [workspace.dependencies]
 anyhow = "1"
+ndarray = "0.16"
+nifti = { version = "0.17.0", features = ["ndarray_volumes"] }
 polars  = { version = "0.52.0", features = ["csv", "lazy", "regex", "timezones", "strings"] }
 polars-io = "0.52.0"
 serde = { version = "1", features = ["derive"] }
