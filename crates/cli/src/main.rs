@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
-use config::{AppConfig, TCPSubjectSelectionConfig, TCPfMRIPreprocessConfig, load_config};
+use config::{
+    AppConfig, TCPSubjectSelectionConfig, TCPfMRIPreprocessConfig, load_config};
 use std::path::PathBuf;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
