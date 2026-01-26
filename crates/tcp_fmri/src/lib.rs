@@ -230,11 +230,16 @@ fn write_timeseries_h5(path: &Path, timeseries: &Array2<f32>) -> Result<()> {
     let file = hdf5::File::create(path)?;
 
     let shape = timeseries.shape();
+
+    // Convert to standard layout to ensure contiguous memory
+    let standard = timeseries.to_owned();
+
     let ds = file
         .new_dataset::<f32>()
         .shape([shape[0], shape[1]])
         .create("timeseries")?;
-    ds.write_raw(timeseries.as_slice().unwrap())?;
+
+    ds.write_raw(standard.as_slice().unwrap())?;
 
     Ok(())
 }
