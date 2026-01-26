@@ -57,6 +57,7 @@ impl fmt::Display for TCPSubjectSelectionConfig {
 pub struct TCPfMRIPreprocessConfig {
     pub fmri_dir: PathBuf,
     pub filter_dir: PathBuf,
+    pub output_dir: PathBuf,
     pub cortical_atlas: PathBuf,
     pub subcortical_atlas: PathBuf,
     #[serde(default)]
@@ -68,6 +69,7 @@ impl Default for TCPfMRIPreprocessConfig {
         Self {
             fmri_dir: PathBuf::from("/path/to/raw_fmri_data"),
             filter_dir: PathBuf::from("/path/to/output"),
+            output_dir: PathBuf::from("/path/to/output"),
             cortical_atlas: PathBuf::from("/path/to/atlas"),
             subcortical_atlas: PathBuf::from("/path/to/atlas"),
             dry_run: false,
@@ -80,6 +82,7 @@ impl fmt::Display for TCPfMRIPreprocessConfig {
         writeln!(f, "TPC fMRI Preprocessing:")?;
         writeln!(f, "  fMRI Dir: {}", self.fmri_dir.display())?;
         writeln!(f, "  Filter Dir: {}", self.filter_dir.display())?;
+        writeln!(f, "  Output Dir: {}", self.output_dir.display())?;
 
         write!(f, "  Dry run: {}", self.dry_run)
     }

@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 use nalgebra::Matrix4;
-use ndarray::{Array2, Array3, Array4};
+use ndarray::{Array2, Array3, Array4, ShapeBuilder};
 use nifti::{IntoNdArray, NiftiHeader, NiftiObject, NiftiVolume, ReaderOptions};
 use std::{collections::HashSet, path::PathBuf};
 
@@ -247,6 +247,9 @@ impl LabelsMasker {
     }
 
     /// Helper: Convert NiftiVolume to Array3
+    ///
+    /// Note: NIfTI data is stored in Fortran (column-major) order, so we must
+    /// preserve this memory layout when converting to ndarray.
     fn volume_to_array3<V>(volume: V) -> Result<Array3<f32>>
     where
         V: NiftiVolume + IntoNdArray,
@@ -257,17 +260,19 @@ impl LabelsMasker {
 
         match ndim {
             3 => {
+                // nifti-rs returns data in Fortran order, so we must use .f() to preserve it
                 let (data, _offset) = array.into_raw_vec_and_offset();
                 Ok(Array3::from_shape_vec(
-                    (shape[0], shape[1], shape[2]),
+                    (shape[0], shape[1], shape[2]).f(),
                     data,
                 )?)
             }
             4 => {
                 if shape[3] == 1 {
+                    // nifti-rs returns data in Fortran order, so we must use .f() to preserve it
                     let (data, _offset) = array.into_raw_vec_and_offset();
                     Ok(Array3::from_shape_vec(
-                        (shape[0], shape[1], shape[2]),
+                        (shape[0], shape[1], shape[2]).f(),
                         data,
                     )?)
                 } else {
@@ -279,6 +284,9 @@ impl LabelsMasker {
     }
 
     /// Helper: Convert NiftiVolume to Array4 (for 4D BOLD data)
+    ///
+    /// Note: NIfTI data is stored in Fortran (column-major) order, so we must
+    /// preserve this memory layout when converting to ndarray.
     fn volume_to_array4<V>(volume: V) -> Result<Array4<f32>>
     where
         V: NiftiVolume + IntoNdArray,
@@ -288,9 +296,10 @@ impl LabelsMasker {
         let shape: Vec<usize> = array.shape().to_vec();
 
         if ndim == 4 {
+            // nifti-rs returns data in Fortran order, so we must use .f() to preserve it
             let (data, _offset) = array.into_raw_vec_and_offset();
             Ok(Array4::from_shape_vec(
-                (shape[0], shape[1], shape[2], shape[3]),
+                (shape[0], shape[1], shape[2], shape[3]).f(),
                 data,
             )?)
         } else {

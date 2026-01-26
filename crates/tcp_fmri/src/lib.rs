@@ -27,7 +27,7 @@ pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
         .iter()
         .filter_map(|file| {
             polars_csv::read_dataframe(file)
-                .map_err(|e| warn!("Failed to read {}: {}", file.display(), e))
+                .map_err(|e| warn!("failed to read {}: {}", file.display(), e))
                 .ok()
                 .map(|df| df.lazy())
         })
@@ -46,9 +46,15 @@ pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
         panic!("failed to locate atlases");
     }
 
+    // Ensure output directory exists
+    std::fs::create_dir_all(&cfg.output_dir)?;
+
     ///////////////////////////////
     // Process subject fMRI BOLD //
     ///////////////////////////////
+
+    let mut unavailable_subjects: Vec<&str> = vec![];
+    let total_subjects = subject_keys.len();
 
     // Iterate over subject keys
     for (i, subject_key) in subject_keys.into_iter().flatten().enumerate() {
@@ -123,10 +129,41 @@ pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
                 combined.shape()[1]
             );
 
-        // Parcellate fMRI data using atlases
+            // Write output to HDF5
+            let task_name = file_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown");
+            let output_path = cfg
+                .output_dir
+                .join(format!("{}_{}.h5", subject_key, task_name));
+
+            write_timeseries_h5(&output_path, &combined)?;
+            info!(
+                "[{}/{}] wrote timeseries to {}",
+                current,
+                total_subjects,
+                output_path.display()
+            );
+        }
     }
 
-    // Write BOLD time series for each subject
+    Ok(())
+}
+
+fn parse_subject_directory_name(key: &str) -> String {
+    format!("sub-{}", key.replace("_", ""))
+}
+
+fn write_timeseries_h5(path: &Path, timeseries: &Array2<f32>) -> Result<()> {
+    let file = hdf5::File::create(path)?;
+
+    let shape = timeseries.shape();
+    let ds = file
+        .new_dataset::<f32>()
+        .shape([shape[0], shape[1]])
+        .create("timeseries")?;
+    ds.write_raw(timeseries.as_slice().unwrap())?;
 
     Ok(())
 }
