@@ -40,6 +40,9 @@ enum Command {
         tcp_dir: Option<PathBuf>,
 
         #[arg(long)]
+        tcp_annex_remote: Option<String>,
+
+        #[arg(long)]
         output_dir: Option<PathBuf>,
 
         #[arg(long, value_delimiter = ',')]
@@ -54,6 +57,18 @@ enum Command {
 
         #[arg(long)]
         filter_dir: Option<PathBuf>,
+
+        #[arg(long)]
+        output_dir: Option<PathBuf>,
+
+        #[arg(long)]
+        cortical_atlas: Option<PathBuf>,
+
+        #[arg(long)]
+        subcortical_atlas: Option<PathBuf>,
+
+        #[arg(long)]
+        dry_run: Option<bool>,
     },
 }
 
@@ -102,6 +117,7 @@ fn main() -> Result<()> {
     match cli.cmd {
         Command::TcpSelectSubjects {
             tcp_dir,
+            tcp_annex_remote,
             output_dir,
             filters,
             dry_run,
@@ -113,6 +129,9 @@ fn main() -> Result<()> {
             };
             if let Some(v) = output_dir {
                 p.output_dir = v
+            };
+            if let Some(v) = tcp_annex_remote {
+                p.tcp_annex_remote = v
             };
 
             if let Some(ref v) = filters
@@ -130,6 +149,10 @@ fn main() -> Result<()> {
         Command::TcpFmriPreprocess {
             fmri_dir,
             filter_dir,
+            output_dir,
+            cortical_atlas,
+            subcortical_atlas,
+            dry_run,
         } => {
             let mut p = cfg.tcp_fmri_preprocess;
 
@@ -138,6 +161,20 @@ fn main() -> Result<()> {
             };
             if let Some(v) = filter_dir {
                 p.filter_dir = v
+            };
+            if let Some(v) = output_dir {
+                p.output_dir = v
+            };
+
+            if let Some(v) = cortical_atlas {
+                p.cortical_atlas = v
+            };
+            if let Some(v) = subcortical_atlas {
+                p.subcortical_atlas = v
+            };
+
+            if let Some(v) = dry_run {
+                p.dry_run = v
             };
 
             tcp_fmri_preprocess::run(&p)
