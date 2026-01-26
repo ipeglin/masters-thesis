@@ -1,152 +1,223 @@
 use anyhow::Result;
 use config::{TCPfMRIPreprocessConfig, polars_csv};
-use ndarray::{Array2, Axis};
+use ndarray::{Array2, Axis, s};
 use nifti_masker::LabelsMasker;
 use polars::prelude::*;
 use std::path::Path;
-use tracing::{info, warn};
+use std::time::Instant;
+use tracing::{debug, info, info_span, warn};
 
 pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
-    info!("{:?}", cfg);
+    let run_start = Instant::now();
 
-    ///////////////////
-    // Load subjects //
-    ///////////////////
+    info!(
+        fmri_dir = %cfg.fmri_dir.display(),
+        filter_dir = %cfg.filter_dir.display(),
+        output_dir = %cfg.output_dir.display(),
+        cortical_atlas = %cfg.cortical_atlas.display(),
+        subcortical_atlas = %cfg.subcortical_atlas.display(),
+        dry_run = cfg.dry_run,
+        "starting fMRI preprocessing pipeline"
+    );
 
+    // Load subject filter files
     let filter_dir = &cfg.filter_dir;
-
-    // Filter files
     let filtered_subjects = [
         filter_dir.join("healthy_controls.csv"),
         filter_dir.join("low_anhedonic.csv"),
         filter_dir.join("high_anhedonic.csv"),
     ];
 
-    // Load dataframes
     let dataframes: Vec<LazyFrame> = filtered_subjects
         .iter()
         .filter_map(|file| {
             polars_csv::read_dataframe(file)
-                .map_err(|e| warn!("failed to read {}: {}", file.display(), e))
+                .map_err(|e| {
+                    warn!(
+                        file = %file.display(),
+                        error = %e,
+                        "failed to read filter file"
+                    )
+                })
                 .ok()
                 .map(|df| df.lazy())
         })
         .collect();
 
-    // Get subject key series
     let subjects = concat(dataframes, UnionArgs::default())?.collect()?;
     let subject_keys = subjects.column("subjectkey")?.str()?;
+    let total_subjects = subject_keys.len();
 
-    //////////////////
-    // Load atlases //
-    //////////////////
+    info!(
+        total_subjects = total_subjects,
+        filter_files_loaded = filtered_subjects.len(),
+        "loaded subject keys"
+    );
 
-    // Check if atlas files are present
-    if !&cfg.cortical_atlas.exists() || !&cfg.subcortical_atlas.exists() {
+    // Validate atlases
+    if !cfg.cortical_atlas.exists() || !cfg.subcortical_atlas.exists() {
         panic!("failed to locate atlases");
     }
 
-    // Ensure output directory exists
     std::fs::create_dir_all(&cfg.output_dir)?;
 
-    ///////////////////////////////
-    // Process subject fMRI BOLD //
-    ///////////////////////////////
+    // Processing state
+    let mut processed_count = 0usize;
+    let mut skipped_count = 0usize;
+    let error_count = 0usize;
 
-    let mut unavailable_subjects: Vec<&str> = vec![];
-    let total_subjects = subject_keys.len();
-
-    // Iterate over subject keys
     for (i, subject_key) in subject_keys.into_iter().flatten().enumerate() {
-        let current = i + 1;
+        let subject_idx = i + 1;
         let dir_name = parse_subject_directory_name(subject_key);
-        let subject_dir = &cfg.fmri_dir.join(&dir_name);
+        let subject_dir = cfg.fmri_dir.join(&dir_name);
+
+        // Create a span for the entire subject processing - this is the "wide event"
+        let _subject_span = info_span!(
+            "process_subject",
+            subject_key = subject_key,
+            subject_idx = subject_idx,
+            total_subjects = total_subjects,
+            subject_dir = %subject_dir.display(),
+        )
+        .entered();
 
         if !subject_dir.is_dir() {
-            unavailable_subjects.push(subject_key);
+            skipped_count += 1;
             warn!(
-                "[{}/{}] subject missing fMRI data. Skipping {}",
-                current, total_subjects, subject_key
+                subject_key = subject_key,
+                subject_idx = subject_idx,
+                total_subjects = total_subjects,
+                reason = "missing_fmri_data",
+                subject_dir = %subject_dir.display(),
+                "skipping subject"
             );
             continue;
         }
 
-        // fMRI files for parcellation
         let mni_results_dir = subject_dir.join("MNINonLinear").join("Results");
         let files_to_preprocess = [mni_results_dir
             .join("task-hammerAP_run-01_bold")
             .join("task-hammerAP_run-01_bold.nii.gz")];
 
         for file_path in files_to_preprocess {
-            // Check if file exists
             if !file_path.exists() {
+                skipped_count += 1;
                 warn!(
-                    "[{}/{}] subject fMRI file does not exist. Skipping {} {}",
-                    current,
-                    total_subjects,
-                    subject_key,
-                    file_path.display()
+                    subject_key = subject_key,
+                    subject_idx = subject_idx,
+                    total_subjects = total_subjects,
+                    reason = "missing_bold_file",
+                    file_path = %file_path.display(),
+                    "skipping subject file"
                 );
                 continue;
             }
-            info!(
-                "[{}/{}] processing file {} {}",
-                current,
-                total_subjects,
-                subject_key,
-                file_path.display()
-            );
 
-            // Label time series parcellations
-            let cortical_masker = LabelsMasker::new(&cfg.cortical_atlas)?;
-            let cortical_bold = cortical_masker.fit_transform(&file_path)?;
-            info!(
-                "[{}/{}] cortical parcellation: {} ROIs x {} timepoints",
-                current,
-                total_subjects,
-                cortical_bold.shape()[0],
-                cortical_bold.shape()[1]
-            );
-
-            let subcortical_masker = LabelsMasker::new(&cfg.subcortical_atlas)?;
-            let subcortical_bold = subcortical_masker.fit_transform(&file_path)?;
-            info!(
-                "[{}/{}] subcortical parcellation: {} ROIs x {} timepoints",
-                current,
-                total_subjects,
-                subcortical_bold.shape()[0],
-                subcortical_bold.shape()[1]
-            );
-
-            // Concatenate cortical and subcortical timeseries
-            let combined =
-                ndarray::concatenate(Axis(0), &[cortical_bold.view(), subcortical_bold.view()])?;
-            info!(
-                "[{}/{}] combined parcellation: {} ROIs x {} timepoints",
-                current,
-                total_subjects,
-                combined.shape()[0],
-                combined.shape()[1]
-            );
-
-            // Write output to HDF5
+            let file_start = Instant::now();
             let task_name = file_path
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("unknown");
+
+            debug!(
+                subject_key = subject_key,
+                task_name = task_name,
+                file_path = %file_path.display(),
+                "starting parcellation"
+            );
+
+            // Cortical parcellation
+            let cortical_start = Instant::now();
+            let cortical_masker = LabelsMasker::new(&cfg.cortical_atlas)?;
+            let cortical_bold = cortical_masker.fit_transform(&file_path)?;
+            let cortical_duration_ms = cortical_start.elapsed().as_millis();
+
+            debug!(
+                subject_key = subject_key,
+                atlas_type = "cortical",
+                n_rois = cortical_bold.shape()[0],
+                n_timepoints = cortical_bold.shape()[1],
+                duration_ms = cortical_duration_ms,
+                atlas_path = %cfg.cortical_atlas.display(),
+                "parcellation completed"
+            );
+
+            // Subcortical parcellation
+            let subcortical_start = Instant::now();
+            let subcortical_masker = LabelsMasker::new(&cfg.subcortical_atlas)?;
+            let subcortical_bold = subcortical_masker.fit_transform(&file_path)?;
+            let subcortical_duration_ms = subcortical_start.elapsed().as_millis();
+
+            debug!(
+                subject_key = subject_key,
+                atlas_type = "subcortical",
+                n_rois = subcortical_bold.shape()[0],
+                n_timepoints = subcortical_bold.shape()[1],
+                duration_ms = subcortical_duration_ms,
+                atlas_path = %cfg.subcortical_atlas.display(),
+                "parcellation completed"
+            );
+
+            // Concatenate
+            let combined =
+                ndarray::concatenate(Axis(0), &[cortical_bold.view(), subcortical_bold.view()])?;
+
+            // Debug: Print first few values
+            debug!(
+                subject_key = subject_key,
+                cortical_first_roi_first_5_timepoints = ?cortical_bold.slice(s![0, ..5]),
+                subcortical_first_roi_first_5_timepoints = ?subcortical_bold.slice(s![0, ..5]),
+                combined_first_roi_first_5_timepoints = ?combined.slice(s![0, ..5]),
+                "timeseries sample values"
+            );
+
+            // Write output
             let output_path = cfg
                 .output_dir
                 .join(format!("{}_{}.h5", subject_key, task_name));
 
+            let write_start = Instant::now();
             write_timeseries_h5(&output_path, &combined)?;
+            let write_duration_ms = write_start.elapsed().as_millis();
+
+            let total_duration_ms = file_start.elapsed().as_millis();
+            processed_count += 1;
+
+            // Wide event: one comprehensive log per subject file processed
             info!(
-                "[{}/{}] wrote timeseries to {}",
-                current,
-                total_subjects,
-                output_path.display()
+                subject_key = subject_key,
+                subject_idx = subject_idx,
+                total_subjects = total_subjects,
+                task_name = task_name,
+                input_file = %file_path.display(),
+                output_file = %output_path.display(),
+                cortical_rois = cortical_bold.shape()[0],
+                subcortical_rois = subcortical_bold.shape()[0],
+                combined_rois = combined.shape()[0],
+                n_timepoints = combined.shape()[1],
+                cortical_duration_ms = cortical_duration_ms,
+                subcortical_duration_ms = subcortical_duration_ms,
+                write_duration_ms = write_duration_ms,
+                total_duration_ms = total_duration_ms,
+                outcome = "success",
+                "subject processed"
             );
         }
     }
+
+    let run_duration_ms = run_start.elapsed().as_millis();
+
+    // Final summary wide event
+    info!(
+        total_subjects = total_subjects,
+        processed_count = processed_count,
+        skipped_count = skipped_count,
+        error_count = error_count,
+        total_duration_ms = run_duration_ms,
+        output_dir = %cfg.output_dir.display(),
+        outcome = if error_count == 0 { "success" } else { "completed_with_errors" },
+        "fMRI preprocessing pipeline completed"
+    );
 
     Ok(())
 }

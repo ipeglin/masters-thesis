@@ -1,8 +1,17 @@
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use config::{AppConfig, TCPSubjectSelectionConfig, TCPfMRIPreprocessConfig, load_config};
 use std::path::PathBuf;
-use tracing_subscriber::EnvFilter;
+use tracing::info;
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+
+#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+enum LogFormat {
+    #[default]
+    Pretty,
+    Json,
+    Compact,
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "masters", version, about = "Preprocess + Process Pipeline")]
@@ -14,6 +23,10 @@ struct Cli {
     /// Logging filter, e.g. 'info', 'debug', 'trace', 'myproj=debug'
     #[arg(long, global = true, default_value = "info")]
     log_level: String,
+
+    /// Log output format
+    #[arg(long, global = true, value_enum, default_value = "pretty")]
+    log_format: LogFormat,
 
     #[command(subcommand)]
     cmd: Command,
@@ -43,17 +56,47 @@ enum Command {
     },
 }
 
+fn init_logging(level: &str, format: LogFormat) {
+    let filter = EnvFilter::new(level);
+
+    match format {
+        LogFormat::Json => {
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(fmt::layer().json().with_file(true).with_line_number(true))
+                .init();
+        }
+        LogFormat::Compact => {
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(fmt::layer().compact())
+                .init();
+        }
+        LogFormat::Pretty => {
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(fmt::layer().pretty())
+                .init();
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::new(cli.log_level.clone()))
-        .init();
+    init_logging(&cli.log_level, cli.log_format);
 
     let cfg = load_config(&cli.config).unwrap_or_else(|_| AppConfig {
         tcp_subject_selection: TCPSubjectSelectionConfig::default(),
         tcp_fmri_preprocess: TCPfMRIPreprocessConfig::default(),
     });
+
+    info!(
+        config_path = %cli.config.display(),
+        log_level = %cli.log_level,
+        version = env!("CARGO_PKG_VERSION"),
+        "starting pipeline"
+    );
 
     match cli.cmd {
         Command::TcpSelectSubjects {
@@ -62,7 +105,6 @@ fn main() -> Result<()> {
             filters,
             dry_run,
         } => {
-            // I/O config
             let mut p = cfg.tcp_subject_selection;
 
             if let Some(v) = tcp_dir {
@@ -72,14 +114,12 @@ fn main() -> Result<()> {
                 p.output_dir = v
             };
 
-            // Optional filters
             if let Some(ref v) = filters
                 && !v.is_empty()
             {
                 p.filters = filters;
             }
 
-            // Run options
             if let Some(v) = dry_run {
                 p.dry_run = v
             };
@@ -90,7 +130,6 @@ fn main() -> Result<()> {
             fmri_dir,
             filter_dir,
         } => {
-            // I/O config
             let mut p = cfg.tcp_fmri_preprocess;
 
             if let Some(v) = fmri_dir {
