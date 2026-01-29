@@ -5,6 +5,231 @@ use nifti::{IntoNdArray, NiftiHeader, NiftiObject, NiftiVolume, ReaderOptions};
 use std::{collections::HashSet, path::PathBuf};
 use tracing::{debug, trace};
 
+/// Standardization strategy for masked signal preprocessing.
+///
+/// Based on nilearn's standardization options for NiftiLabelsMasker.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub enum Standardize {
+    /// No standardization
+    #[default]
+    None,
+    /// Z-score using sample standard deviation (ddof=1)
+    /// This is the recommended method.
+    ZscoreSample,
+    /// Percent signal change: (signal - mean) / |mean| * 100
+    Psc,
+}
+
+/// Configuration for signal preprocessing in maskers.
+///
+/// Based on nilearn's NiftiLabelsMasker preprocessing options.
+/// This controls how extracted time series are cleaned before being returned.
+#[derive(Debug, Clone)]
+pub struct MaskerSignalConfig {
+    /// Whether to perform linear detrending
+    pub detrend: bool,
+    /// Standardization strategy
+    pub standardize: Standardize,
+}
+
+impl Default for MaskerSignalConfig {
+    fn default() -> Self {
+        Self {
+            detrend: false,
+            standardize: Standardize::None,
+        }
+    }
+}
+
+impl MaskerSignalConfig {
+    /// Create a preprocessing config with detrending and z-score standardization.
+    /// This matches nilearn's default behavior.
+    pub fn with_defaults() -> Self {
+        Self {
+            detrend: true,
+            standardize: Standardize::ZscoreSample,
+        }
+    }
+
+    /// Builder method to set detrending
+    pub fn detrend(mut self, detrend: bool) -> Self {
+        self.detrend = detrend;
+        self
+    }
+
+    /// Builder method to set standardization
+    pub fn standardize(mut self, standardize: Standardize) -> Self {
+        self.standardize = standardize;
+        self
+    }
+
+    /// Check if any preprocessing is enabled
+    pub fn is_enabled(&self) -> bool {
+        self.detrend || self.standardize != Standardize::None
+    }
+}
+
+/// Linear detrending of a 2D signal array.
+///
+/// Removes the mean and linear trend from each row (each ROI's time series).
+/// Based on nilearn's `_detrend` function.
+///
+/// # Arguments
+/// * `data` - Array2 of shape (n_rois, n_timepoints)
+///
+/// # Returns
+/// Detrended signal with the same shape
+fn detrend_signal(data: &Array2<f32>) -> Array2<f32> {
+    let (n_rois, n_timepoints) = data.dim();
+
+    if n_timepoints <= 1 {
+        return data.clone();
+    }
+
+    let mut result = data.clone();
+
+    // Create time regressor: [0, 1, 2, ..., n-1], then center and normalize
+    let regressor_mean = (n_timepoints - 1) as f32 / 2.0;
+    let mut regressor: Vec<f32> = (0..n_timepoints)
+        .map(|i| i as f32 - regressor_mean)
+        .collect();
+
+    // Normalize regressor
+    let regressor_std: f32 = regressor.iter().map(|&x| x * x).sum::<f32>().sqrt();
+    if regressor_std > f32::EPSILON {
+        for r in &mut regressor {
+            *r /= regressor_std;
+        }
+    }
+
+    for roi_idx in 0..n_rois {
+        // Step 1: Remove mean
+        let mean: f32 = result.row(roi_idx).sum() / n_timepoints as f32;
+        for t in 0..n_timepoints {
+            result[[roi_idx, t]] -= mean;
+        }
+
+        // Step 2: Remove linear trend
+        // Compute dot product of regressor with signal (already mean-centered)
+        let dot: f32 = result
+            .row(roi_idx)
+            .iter()
+            .zip(regressor.iter())
+            .map(|(&val, &r)| val * r)
+            .sum();
+
+        // Subtract the linear component
+        for (t, &r) in regressor.iter().enumerate() {
+            result[[roi_idx, t]] -= dot * r;
+        }
+    }
+
+    result
+}
+
+/// Standardize signal using the specified strategy.
+///
+/// Based on nilearn's `standardize_signal` function.
+///
+/// # Arguments
+/// * `data` - Array2 of shape (n_rois, n_timepoints)
+/// * `standardize` - Standardization strategy
+/// * `already_detrended` - Whether the signal has already been detrended (mean removed)
+///
+/// # Returns
+/// Standardized signal with the same shape
+fn standardize_signal(
+    data: &Array2<f32>,
+    standardize: Standardize,
+    already_detrended: bool,
+) -> Array2<f32> {
+    let (n_rois, n_timepoints) = data.dim();
+
+    if n_timepoints <= 1 {
+        return data.clone();
+    }
+
+    match standardize {
+        Standardize::None => data.clone(),
+
+        Standardize::ZscoreSample => {
+            let mut result = data.clone();
+
+            for roi_idx in 0..n_rois {
+                // Remove mean if not already detrended
+                if !already_detrended {
+                    let mean: f32 = result.row(roi_idx).sum() / n_timepoints as f32;
+                    for t in 0..n_timepoints {
+                        result[[roi_idx, t]] -= mean;
+                    }
+                }
+
+                // Compute sample standard deviation (ddof=1)
+                let variance: f32 = result.row(roi_idx).iter().map(|&v| v * v).sum::<f32>()
+                    / (n_timepoints - 1) as f32;
+                let std = variance.sqrt();
+
+                // Avoid division by zero
+                let std = if std < f32::EPSILON { 1.0 } else { std };
+
+                for t in 0..n_timepoints {
+                    result[[roi_idx, t]] /= std;
+                }
+            }
+
+            result
+        }
+
+        Standardize::Psc => {
+            let mut result = data.clone();
+
+            for roi_idx in 0..n_rois {
+                let mean: f32 = data.row(roi_idx).sum() / n_timepoints as f32;
+                let abs_mean = mean.abs();
+
+                if abs_mean < f32::EPSILON {
+                    // Mean is zero, PSC is meaningless - set to zero
+                    for t in 0..n_timepoints {
+                        result[[roi_idx, t]] = 0.0;
+                    }
+                } else {
+                    for t in 0..n_timepoints {
+                        result[[roi_idx, t]] = (data[[roi_idx, t]] - mean) / abs_mean * 100.0;
+                    }
+                }
+            }
+
+            result
+        }
+    }
+}
+
+/// Apply preprocessing (detrend and/or standardize) to extracted time series.
+///
+/// Based on nilearn's signal cleaning pipeline.
+///
+/// # Arguments
+/// * `data` - Array2 of shape (n_rois, n_timepoints)
+/// * `config` - Preprocessing configuration
+///
+/// # Returns
+/// Preprocessed signal with the same shape
+pub fn preprocess_signals(data: &Array2<f32>, config: &MaskerSignalConfig) -> Array2<f32> {
+    if !config.is_enabled() {
+        return data.clone();
+    }
+
+    // Apply detrending first (order matters: detrend before standardize)
+    let data = if config.detrend {
+        detrend_signal(data)
+    } else {
+        data.clone()
+    };
+
+    // Apply standardization
+    standardize_signal(&data, config.standardize, config.detrend)
+}
+
 pub struct LabelsMasker {
     /// The atlas with integer labels for each ROI
     labels_volume: Array3<f32>,
@@ -14,13 +239,22 @@ pub struct LabelsMasker {
     unique_labels: Vec<i32>,
     /// Shape of the atlas volume
     atlas_shape: [usize; 3],
+    /// Signal preprocessing configuration
+    signal_config: MaskerSignalConfig,
 }
 
 impl LabelsMasker {
     /// Load and prepare the atlas
     pub fn new(atlas_path: &PathBuf) -> Result<Self> {
+        Self::with_config(atlas_path, MaskerSignalConfig::default())
+    }
+
+    /// Load and prepare the atlas with preprocessing configuration
+    pub fn with_config(atlas_path: &PathBuf, signal_config: MaskerSignalConfig) -> Result<Self> {
         debug!(
             atlas_path = %atlas_path.display(),
+            detrend = signal_config.detrend,
+            standardize = ?signal_config.standardize,
             "loading atlas"
         );
 
@@ -70,6 +304,7 @@ impl LabelsMasker {
             labels_affine,
             unique_labels,
             atlas_shape,
+            signal_config,
         })
     }
 
@@ -78,8 +313,16 @@ impl LabelsMasker {
         self.unique_labels.len()
     }
 
+    /// Get the signal preprocessing configuration
+    pub fn signal_config(&self) -> &MaskerSignalConfig {
+        &self.signal_config
+    }
+
     /// Extract time series for each labeled region from BOLD data
     /// Returns Array2 of shape (n_labels, n_timepoints)
+    ///
+    /// If preprocessing is configured, detrending and/or standardization
+    /// will be applied to the extracted time series.
     pub fn fit_transform(&self, bold_path: &PathBuf) -> Result<Array2<f32>> {
         debug!(
             bold_path = %bold_path.display(),
@@ -164,6 +407,16 @@ impl LabelsMasker {
             empty_rois = empty_rois,
             output_shape = ?[n_labels, n_timepoints],
             bold_path = %bold_path.display(),
+            "extraction completed, applying preprocessing"
+        );
+
+        // Apply preprocessing if configured
+        let result = preprocess_signals(&result, &self.signal_config);
+
+        debug!(
+            preprocessing_enabled = self.signal_config.is_enabled(),
+            detrend = self.signal_config.detrend,
+            standardize = ?self.signal_config.standardize,
             "fit_transform completed"
         );
 
@@ -429,5 +682,90 @@ impl LabelsMasker {
         } else {
             bail!("Expected 4D BOLD volume, got {}D", ndim)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::array;
+
+    #[test]
+    fn test_detrend_removes_linear_trend() {
+        // Create a signal with a known linear trend (2 ROIs, 5 timepoints)
+        // ROI 0: y = 2*t -> [0, 2, 4, 6, 8]
+        // ROI 1: y = t + 10 -> [10, 11, 12, 13, 14]
+        let data = array![
+            [0.0_f32, 2.0, 4.0, 6.0, 8.0],
+            [10.0_f32, 11.0, 12.0, 13.0, 14.0]
+        ];
+
+        let detrended = detrend_signal(&data);
+
+        // After detrending, the signal should be approximately zero
+        for roi in 0..2 {
+            for t in 0..5 {
+                assert!(
+                    detrended[[roi, t]].abs() < 1e-5,
+                    "Detrended value [{}, {}] = {} should be near zero",
+                    roi,
+                    t,
+                    detrended[[roi, t]]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_standardize_zscore() {
+        // Create a signal with known mean and std (1 ROI, 5 timepoints)
+        let data = array![[1.0_f32, 2.0, 3.0, 4.0, 5.0]];
+
+        let standardized = standardize_signal(&data, Standardize::ZscoreSample, false);
+
+        // Check mean is approximately 0
+        let mean: f32 = standardized.row(0).sum() / 5.0;
+        assert!(mean.abs() < 1e-5, "Mean {} should be near zero", mean);
+
+        // Check std is approximately 1 (using ddof=1)
+        let variance: f32 = standardized.row(0).iter().map(|&v| v * v).sum::<f32>() / 4.0;
+        let std = variance.sqrt();
+        assert!((std - 1.0).abs() < 1e-5, "Std {} should be near 1.0", std);
+    }
+
+    #[test]
+    fn test_standardize_psc() {
+        // Create a signal with known mean (1 ROI, 5 timepoints)
+        // Mean = 100
+        let data = array![[100.0_f32, 110.0, 90.0, 105.0, 95.0]];
+
+        let standardized = standardize_signal(&data, Standardize::Psc, false);
+
+        // PSC[0] = (100 - 100) / 100 * 100 = 0
+        // PSC[1] = (110 - 100) / 100 * 100 = 10
+        // PSC[2] = (90 - 100) / 100 * 100 = -10
+        assert!((standardized[[0, 0]] - 0.0).abs() < 1e-5);
+        assert!((standardized[[0, 1]] - 10.0).abs() < 1e-5);
+        assert!((standardized[[0, 2]] - (-10.0)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_masker_signal_config_builder() {
+        let config = MaskerSignalConfig::default()
+            .detrend(true)
+            .standardize(Standardize::ZscoreSample);
+
+        assert!(config.detrend);
+        assert_eq!(config.standardize, Standardize::ZscoreSample);
+        assert!(config.is_enabled());
+    }
+
+    #[test]
+    fn test_masker_signal_config_disabled() {
+        let config = MaskerSignalConfig::default();
+
+        assert!(!config.detrend);
+        assert_eq!(config.standardize, Standardize::None);
+        assert!(!config.is_enabled());
     }
 }
