@@ -2,7 +2,7 @@
 tcp_dir = "/path/to/tcp"
 tcp_annex_remote = "remote_annex_id"
 output_dir = "/path/to/subject/output"
-filter = ["available_demos_filter", "available_shaps_filter"]
+filters = ["available_demos_filter", "available_shaps_filter"]
 dry_run = false
 
 [tcp_fmri_preprocess]

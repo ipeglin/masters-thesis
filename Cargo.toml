@@ -3,6 +3,8 @@ resolver = "2"
 members = [
   "crates/cli",
   "crates/config",
+  "crates/fc",
+  "crates/signals",
   "crates/tcp_subject_selection",
   "crates/tcp_fmri_preprocess",
   "crates/tcp_fmri_process",
@@ -11,10 +13,12 @@ members = [
 
 [workspace.dependencies]
 anyhow = "1"
-ndarray = "0.16"
-nifti = { version = "0.17.0", features = ["ndarray_volumes"] }
-polars  = { version = "0.52.0", features = ["csv", "lazy", "regex", "timezones", "strings"] }
+hdf5 = "0.8"
+ndarray = "0.15.6"
+nifti = { version = "0.17.0", features = ["ndarray_volumes", "ndarray"] }
+polars  = { version = "0.52.0", features = ["csv", "lazy", "regex", "timezones", "strings", "dtype-full", "round_series", "trigonometry"] }
 polars-io = "0.52.0"
+rustfft = "6.4.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1.0"
