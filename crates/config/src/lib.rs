@@ -14,6 +14,7 @@ pub struct AppConfig {
     pub tcp_subject_selection: TCPSubjectSelectionConfig,
     #[serde(default)]
     pub tcp_fmri_preprocess: TCPfMRIPreprocessConfig,
+    #[serde(default)]
     pub tcp_fmri_process: TCPfMRIProcessConfig,
 }
 
