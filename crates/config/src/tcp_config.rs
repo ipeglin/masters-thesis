@@ -50,6 +50,9 @@ pub struct TCPfMRIPreprocessConfig {
     pub subcortical_atlas: PathBuf,
     #[serde(default)]
     pub dry_run: bool,
+    /// Force reprocessing of subjects that already have preprocessed output
+    #[serde(default)]
+    pub force: bool,
 }
 
 impl Default for TCPfMRIPreprocessConfig {
@@ -61,6 +64,7 @@ impl Default for TCPfMRIPreprocessConfig {
             cortical_atlas: PathBuf::from("/path/to/atlas"),
             subcortical_atlas: PathBuf::from("/path/to/atlas"),
             dry_run: false,
+            force: false,
         }
     }
 }

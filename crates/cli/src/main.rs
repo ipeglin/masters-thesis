@@ -71,6 +71,10 @@ enum Command {
 
         #[arg(long)]
         dry_run: Option<bool>,
+
+        /// Force reprocessing of subjects that already have preprocessed output
+        #[arg(long, short = 'f')]
+        force: bool,
     },
     TcpFmriProcess {
         #[arg(long)]
@@ -184,6 +188,7 @@ fn main() -> Result<()> {
             cortical_atlas,
             subcortical_atlas,
             dry_run,
+            force,
         } => {
             let mut p = cfg.tcp_fmri_preprocess;
 
@@ -206,6 +211,9 @@ fn main() -> Result<()> {
 
             if let Some(v) = dry_run {
                 p.dry_run = v
+            };
+            if force {
+                p.force = true
             };
 
             tcp_fmri_preprocess::run(&p)

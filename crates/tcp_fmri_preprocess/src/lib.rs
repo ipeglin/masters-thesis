@@ -17,6 +17,7 @@ pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
         cortical_atlas = %cfg.cortical_atlas.display(),
         subcortical_atlas = %cfg.subcortical_atlas.display(),
         dry_run = cfg.dry_run,
+        force = cfg.force,
         "starting fMRI preprocessing pipeline"
     );
 
@@ -113,11 +114,31 @@ pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
                 continue;
             }
 
-            let file_start = Instant::now();
             let task_name = file_path
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("unknown");
+
+            // Check if output already exists (skip unless --force)
+            let output_path = cfg
+                .output_dir
+                .join(subject_key)
+                .join(format!("{}.h5", task_name));
+            if output_path.exists() && !cfg.force {
+                skipped_count += 1;
+                info!(
+                    subject_key = subject_key,
+                    subject_idx = subject_idx,
+                    total_subjects = total_subjects,
+                    task_name = task_name,
+                    reason = "already_preprocessed",
+                    output_file = %output_path.display(),
+                    "skipping subject (already preprocessed, use --force to reprocess)"
+                );
+                continue;
+            }
+
+            let file_start = Instant::now();
 
             debug!(
                 subject_key = subject_key,
@@ -176,10 +197,9 @@ pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
             );
 
             // Write output
-            let output_subject_dir = cfg.output_dir.join(subject_key);
-            std::fs::create_dir_all(&output_subject_dir)?;
-
-            let output_path = output_subject_dir.join(format!("{}.h5", task_name));
+            if let Some(parent) = output_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
 
             let write_start = Instant::now();
             write_timeseries_h5(&output_path, &cortical_bold, &subcortical_bold)?;
