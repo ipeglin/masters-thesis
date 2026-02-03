@@ -2,3 +2,7 @@
 config.toml
 !*.example
 .DS_Store
+
+# IDUN setup for modules
+setup_env.sh
+build_hdf5.sh
