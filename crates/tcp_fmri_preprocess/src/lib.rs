@@ -49,7 +49,9 @@ pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
         })
         .collect();
 
-    let subjects = concat(dataframes, UnionArgs::default())?.collect()?;
+    let subjects = concat(dataframes, UnionArgs::default())?
+        .unique(Some(cols(["subjectkey"])), UniqueKeepStrategy::Any)
+        .collect()?;
     let subject_keys = subjects.column("subjectkey")?.str()?;
     let total_subjects = subject_keys.len();
 
@@ -100,9 +102,26 @@ pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
         }
 
         let mni_results_dir = subject_dir.join("MNINonLinear").join("Results");
-        let files_to_preprocess = [mni_results_dir
-            .join("task-hammerAP_run-01_bold")
-            .join("task-hammerAP_run-01_bold.nii.gz")];
+        let files_to_preprocess = [
+            // Harari-Hammer task
+            mni_results_dir
+                .join("task-hammerAP_run-01_bold")
+                .join("task-hammerAP_run-01_bold.nii.gz"),
+            // Resting state AP encoding
+            mni_results_dir
+                .join("task-restAP_run-01_bold")
+                .join("task-restAP_run-01_bold.nii.gz"),
+            mni_results_dir
+                .join("task-restAP_run-02_bold")
+                .join("task-restAP_run-02_bold.nii.gz"),
+            // Resting state PA encoding
+            mni_results_dir
+                .join("task-restPA_run-01_bold")
+                .join("task-restPA_run-01_bold.nii.gz"),
+            mni_results_dir
+                .join("task-restPA_run-02_bold")
+                .join("task-restPA_run-02_bold.nii.gz"),
+        ];
 
         for file_path in files_to_preprocess {
             if !file_path.exists() {
