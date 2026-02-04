@@ -203,35 +203,9 @@ pub fn run(cfg: &TCPfMRIProcessConfig) -> Result<()> {
             let fc_duration_ms = fc_start.elapsed().as_millis();
 
             // Extract connectivity data into arrays for HDF5
-            let fc_labels: Vec<String> = full_df
-                .get_column_names()
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
-            let fc_num_rois = fc_labels.len();
-
-            let mut fc_corr_matrix = Array2::<f64>::zeros((fc_num_rois, fc_num_rois));
-            let mut fc_z_matrix = Array2::<f64>::zeros((fc_num_rois, fc_num_rois));
-
-            let corr_df = corr_matrix.get_values();
-            let z_df = z_matrix.get_values();
-
-            for (i, label) in fc_labels.iter().enumerate() {
-                if let Ok(corr_col) = corr_df.column(label.as_str()) {
-                    if let Ok(values) = corr_col.f64() {
-                        for (j, val) in values.iter().enumerate() {
-                            fc_corr_matrix[[i, j]] = val.unwrap_or(f64::NAN);
-                        }
-                    }
-                }
-                if let Ok(z_col) = z_df.column(label.as_str()) {
-                    if let Ok(values) = z_col.f64() {
-                        for (j, val) in values.iter().enumerate() {
-                            fc_z_matrix[[i, j]] = val.unwrap_or(f64::NAN);
-                        }
-                    }
-                }
-            }
+            let fc_labels = corr_matrix.labels.clone();
+            let fc_corr_matrix = corr_matrix.to_ndarray()?;
+            let fc_z_matrix = z_matrix.to_ndarray()?;
 
             // Write whole-signal connectivity to HDF5
             let fc_output_file = file_name
@@ -342,16 +316,10 @@ pub fn run(cfg: &TCPfMRIProcessConfig) -> Result<()> {
                 };
 
                 // Extract correlation values into the 3D array
-                let corr_df = mode_corr.get_values();
-                for (i, row_label) in labels.iter().enumerate() {
-                    if let Ok(col) = corr_df.column(row_label.as_str()) {
-                        if let Ok(values) = col.f64() {
-                            for (j, val) in values.iter().enumerate() {
-                                corr_matrices[[mode_idx, i, j]] = val.unwrap_or(f64::NAN);
-                            }
-                        }
-                    }
-                }
+                let corr_arr = mode_corr.to_ndarray()?;
+                corr_matrices
+                    .slice_mut(ndarray::s![mode_idx, .., ..])
+                    .assign(&corr_arr);
 
                 // Compute Fisher Z-transform
                 let mode_z = match mode_corr.into_fisher_z() {
@@ -373,16 +341,10 @@ pub fn run(cfg: &TCPfMRIProcessConfig) -> Result<()> {
                 };
 
                 // Extract z-values into the 3D array
-                let z_df = mode_z.get_values();
-                for (i, row_label) in labels.iter().enumerate() {
-                    if let Ok(col) = z_df.column(row_label.as_str()) {
-                        if let Ok(values) = col.f64() {
-                            for (j, val) in values.iter().enumerate() {
-                                z_matrices[[mode_idx, i, j]] = val.unwrap_or(f64::NAN);
-                            }
-                        }
-                    }
-                }
+                let z_arr = mode_z.to_ndarray()?;
+                z_matrices
+                    .slice_mut(ndarray::s![mode_idx, .., ..])
+                    .assign(&z_arr);
             }
             let mode_fc_duration_ms = mode_fc_start.elapsed().as_millis();
 
