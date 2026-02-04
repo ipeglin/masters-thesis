@@ -269,6 +269,133 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
         &high_anhedonic_df,
     )?;
 
+    /////////////////////////
+    // Apply TEPS Filters //
+    /////////////////////////
+
+    // Check teps file is available
+    let teps_path = dataset_dir.join("phenotype").join("teps01.tsv");
+    match annex::get_file_from_annex(dataset_dir, &teps_path) {
+        Ok(_) => {
+            info!("Fetched file from annex: {}", teps_path.display());
+        }
+        Err(e @ annex::AnnexError::AlreadyExists(_)) => {
+            info!("{}", e);
+        }
+        Err(e @ annex::AnnexError::UnbrokenSymlink(_)) => {
+            warn!("{}", e);
+        }
+        Err(e) => {
+            panic!("{}", e);
+        }
+    }
+
+    if !teps_path.exists() {
+        panic!("could not find teps01.tsv file");
+    }
+
+    let teps_path = teps_path.to_str().expect("File path could not be parsed"); // shadowing
+
+    // Load TEPS data once with scores, filtering out 999 values
+    let teps_valid_df = LazyCsvReader::new(PlPath::from_str(teps_path))
+        .with_separator(b'\t')
+        .with_has_header(true)
+        .with_ignore_errors(true)
+        .finish()?
+        .filter(col("teps_ap").neq(lit(999))) // Anticipatory Pleasure Score
+        .filter(col("teps_cp").neq(lit(999))) // Consummatory Pleasure Score
+        .unique(Some(cols(["subjectkey"])), UniqueKeepStrategy::Any)
+        .select([col("subjectkey"), col("teps_ap"), col("teps_cp")])
+        .collect()?;
+
+    // Available TEPS subjects
+    let teps_df = teps_valid_df
+        .clone()
+        .lazy()
+        .select([col("subjectkey")])
+        .collect()?;
+    polars_csv::write_dataframe(filter_output_dir.join("teps.csv"), &teps_df)?;
+
+    // Compute mean and std for anticipatory and consummatory pleasure scores
+    let teps_stats = teps_valid_df
+        .clone()
+        .lazy()
+        .select([
+            col("teps_ap").mean().alias("ap_mean"),
+            col("teps_ap").std(1).alias("ap_std"),
+            col("teps_cp").mean().alias("cp_mean"),
+            col("teps_cp").std(1).alias("cp_std"),
+        ])
+        .collect()?;
+
+    let ap_mean = teps_stats.column("ap_mean")?.f64()?.get(0).unwrap();
+    let ap_std = teps_stats.column("ap_std")?.f64()?.get(0).unwrap();
+    let cp_mean = teps_stats.column("cp_mean")?.f64()?.get(0).unwrap();
+    let cp_std = teps_stats.column("cp_std")?.f64()?.get(0).unwrap();
+
+    let ap_threshold = ap_mean - 2.0 * ap_std;
+    let cp_threshold = cp_mean - 2.0 * cp_std;
+
+    info!(
+        "TEPS AP stats: mean={:.2}, std={:.2}, anhedonia threshold={:.2}",
+        ap_mean, ap_std, ap_threshold
+    );
+    info!(
+        "TEPS CP stats: mean={:.2}, std={:.2}, anhedonia threshold={:.2}",
+        cp_mean, cp_std, cp_threshold
+    );
+
+    // Anticipatory anhedonic: scoring more than 2 SD below mean on teps_ap
+    let teps_anticipatory_anhedonic_df = teps_valid_df
+        .clone()
+        .lazy()
+        .filter(col("teps_ap").lt(lit(ap_threshold)))
+        .select([col("subjectkey")])
+        .collect()?;
+
+    polars_csv::write_dataframe(
+        filter_output_dir.join("teps_anticipatory_anhedonic.csv"),
+        &teps_anticipatory_anhedonic_df,
+    )?;
+
+    // Anticipatory non-anhedonic: scoring at or above the threshold on teps_ap
+    let teps_anticipatory_non_anhedonic_df = teps_valid_df
+        .clone()
+        .lazy()
+        .filter(col("teps_ap").gt_eq(lit(ap_threshold)))
+        .select([col("subjectkey")])
+        .collect()?;
+
+    polars_csv::write_dataframe(
+        filter_output_dir.join("teps_anticipatory_non_anhedonic.csv"),
+        &teps_anticipatory_non_anhedonic_df,
+    )?;
+
+    // Consummatory anhedonic: scoring more than 2 SD below mean on teps_cp
+    let teps_consummatory_anhedonic_df = teps_valid_df
+        .clone()
+        .lazy()
+        .filter(col("teps_cp").lt(lit(cp_threshold)))
+        .select([col("subjectkey")])
+        .collect()?;
+
+    polars_csv::write_dataframe(
+        filter_output_dir.join("teps_consummatory_anhedonic.csv"),
+        &teps_consummatory_anhedonic_df,
+    )?;
+
+    // Consummatory non-anhedonic: scoring at or above the threshold on teps_cp
+    let teps_consummatory_non_anhedonic_df = teps_valid_df
+        .lazy()
+        .filter(col("teps_cp").gt_eq(lit(cp_threshold)))
+        .select([col("subjectkey")])
+        .collect()?;
+
+    polars_csv::write_dataframe(
+        filter_output_dir.join("teps_consummatory_non_anhedonic.csv"),
+        &teps_consummatory_non_anhedonic_df,
+    )?;
+
     /////////////////////
     // Combine Filters //
     /////////////////////
