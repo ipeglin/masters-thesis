@@ -58,6 +58,7 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
     let required_files: Vec<PathBuf> = vec![
         phenotype_dir.join("demos.tsv"),
         phenotype_dir.join("shaps01.tsv"),
+        phenotype_dir.join("teps01.tsv"),
     ];
     required_files.iter().try_for_each(|file_path| {
         if !file_path.is_file() && !annex::is_broken_symlink(file_path) {
@@ -185,7 +186,7 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
     }
 
     if !shaps_path.exists() {
-        panic!("could not find shaps.tsv file");
+        panic!("could not find shaps01.tsv file");
     }
 
     let shaps_path = shaps_path.to_str().expect("File path could not be parsed"); // shadowing
@@ -216,7 +217,7 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
         .collect()?;
 
     polars_csv::write_dataframe(
-        filter_output_dir.join("non_anhedonic.csv"),
+        filter_output_dir.join("shaps_non_anhedonic.csv"),
         &non_anhedonic_df,
     )?;
 
@@ -232,7 +233,7 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    polars_csv::write_dataframe(filter_output_dir.join("anhedonic.csv"), &anhedonic_df)?;
+    polars_csv::write_dataframe(filter_output_dir.join("shaps_anhedonic.csv"), &anhedonic_df)?;
 
     // Low-anhedonic subjects
     let low_anhedonic_df = LazyCsvReader::new(PlPath::from_str(shaps_path))
@@ -247,7 +248,7 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
         .collect()?;
 
     polars_csv::write_dataframe(
-        filter_output_dir.join("low_anhedonic.csv"),
+        filter_output_dir.join("shaps_low_anhedonic.csv"),
         &low_anhedonic_df,
     )?;
 
@@ -264,7 +265,7 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
         .collect()?;
 
     polars_csv::write_dataframe(
-        filter_output_dir.join("high_anhedonic.csv"),
+        filter_output_dir.join("shaps_high_anhedonic.csv"),
         &high_anhedonic_df,
     )?;
 
