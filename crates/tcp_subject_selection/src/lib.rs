@@ -400,14 +400,29 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
     // Combine Filters //
     /////////////////////
 
-    // Healthy Controls
-    let healthy_controls_df = genpop_df.join(
-        &non_anhedonic_df,
-        ["subjectkey"],
-        ["subjectkey"],
-        JoinArgs::new(JoinType::Inner), // intersection
-        None,                           // Suffix for duplicate columns
-    )?;
+    // Healthy Controls (GenPop + SHAPS non-anhedonic + TEPS non-anhedonic on both subscales)
+    let healthy_controls_df = genpop_df
+        .join(
+            &non_anhedonic_df,
+            ["subjectkey"],
+            ["subjectkey"],
+            JoinArgs::new(JoinType::Inner),
+            None,
+        )?
+        .join(
+            &teps_anticipatory_non_anhedonic_df,
+            ["subjectkey"],
+            ["subjectkey"],
+            JoinArgs::new(JoinType::Inner),
+            None,
+        )?
+        .join(
+            &teps_consummatory_non_anhedonic_df,
+            ["subjectkey"],
+            ["subjectkey"],
+            JoinArgs::new(JoinType::Inner),
+            None,
+        )?;
 
     polars_csv::write_dataframe(
         filter_output_dir.join("healthy_controls.csv"),
