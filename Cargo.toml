@@ -5,10 +5,11 @@ members = [
   "crates/config",
   "crates/fc",
   "crates/signals",
+  "crates/nifti_masker",
   "crates/tcp_subject_selection",
   "crates/tcp_fmri_preprocess",
   "crates/tcp_fmri_process",
-  "crates/nifti_masker"
+  "crates/istart_subject_selection",
 ]
 
 [workspace.dependencies]
