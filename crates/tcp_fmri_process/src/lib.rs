@@ -1,4 +1,5 @@
-pub mod atlas;
+mod atlas;
+mod timeseries;
 
 use anyhow::Result;
 use config::TCPfMRIProcessConfig;
@@ -14,7 +15,8 @@ use std::time::Instant;
 use std::{fs, io};
 use tracing::{debug, info, info_span, warn};
 
-use crate::atlas::{BrainAtlas, RoiType};
+use atlas::{BrainAtlas, RoiType};
+use timeseries::TimeseriesData;
 
 pub fn run(cfg: &TCPfMRIProcessConfig) -> Result<()> {
     let run_start = Instant::now();
@@ -216,7 +218,7 @@ pub fn run(cfg: &TCPfMRIProcessConfig) -> Result<()> {
             let fc_connectivity_data = ConnectivityData {
                 corr_matrix: fc_corr_matrix,
                 z_matrix: fc_z_matrix,
-                labels: fc_labels,
+                labels: fc_labels.clone(),
             };
             append_connectivity_h5(
                 &output_dir.join(&fc_output_file),
@@ -232,6 +234,46 @@ pub fn run(cfg: &TCPfMRIProcessConfig) -> Result<()> {
                 fc_duration_ms = fc_duration_ms,
                 output_file = fc_output_file,
                 "computed whole-signal connectivity"
+            );
+
+            // Write BOLD timeseries to HDF5
+            let timeseries_output_file = file_name
+                .as_ref()
+                .map_or("timeseries.h5".to_string(), |val| {
+                    format!("{}__timeseries.h5", val)
+                });
+
+            let timeseries_data = match TimeseriesData::new(full_df.clone()) {
+                Ok(ts) => ts,
+                Err(e) => {
+                    error_count += 1;
+                    warn!(
+                        subject = subject,
+                        subject_idx = subject_idx,
+                        total_subjects = total_subjects,
+                        task_name = task_name,
+                        error = %e,
+                        reason = "timeseries_extraction_failed",
+                        "skipping subject due to error"
+                    );
+                    continue;
+                }
+            };
+
+            append_timeseries_h5(
+                &output_dir.join(&timeseries_output_file),
+                subject,
+                &timeseries_data,
+                cfg.force,
+            )?;
+
+            debug!(
+                subject = subject,
+                task_name = task_name,
+                n_rois = n_rois,
+                n_timepoints = n_timepoints,
+                output_file = timeseries_output_file,
+                "saved BOLD timeseries"
             );
 
             // MVMD decomposition
@@ -724,6 +766,63 @@ fn append_mode_connectivity_h5(
             .shape([1])
             .create("num_rois")?
             .write_raw(&[num_rois as u32])?;
+    }
+
+    Ok(())
+}
+
+/// Appends BOLD timeseries data for a subject.
+fn append_timeseries_h5(
+    path: &Path,
+    subject: &str,
+    data: &TimeseriesData,
+    force: bool,
+) -> Result<()> {
+    let file = open_or_create_h5(path)?;
+
+    let n_timepoints = data.get_timepoint_count();
+    let n_rois = data.get_channel_count();
+
+    // Create subject group (replace if force=true)
+    let group = create_subject_group(&file, subject, force)?;
+
+    // Write timeseries: (T x N_ROIs)
+    let ts_ds = group
+        .new_dataset::<f64>()
+        .shape([n_timepoints, n_rois])
+        .create("timeseries")?;
+
+    let as_array = data.to_ndarray()?;
+
+    ts_ds.write_raw(
+        as_array
+            .as_slice()
+            .expect("failed to convert array to slice"),
+    )?;
+
+    // Write per-subject metadata
+    group
+        .new_attr::<u32>()
+        .shape([1])
+        .create("n_timepoints")?
+        .write_raw(&[n_timepoints as u32])?;
+
+    // Write shared metadata to root if not already present
+    let root = file.group("/")?;
+    if root.attr("labels").is_err() {
+        // ROI labels as comma-separated string (shared across all subjects)
+        let labels_str = data.labels.join(",");
+        let labels_unicode: hdf5::types::VarLenUnicode = labels_str.parse().unwrap();
+        root.new_attr::<hdf5::types::VarLenUnicode>()
+            .shape([1])
+            .create("labels")?
+            .write_raw(&[labels_unicode])?;
+
+        // Number of ROIs (shared across all subjects)
+        root.new_attr::<u32>()
+            .shape([1])
+            .create("num_rois")?
+            .write_raw(&[n_rois as u32])?;
     }
 
     Ok(())

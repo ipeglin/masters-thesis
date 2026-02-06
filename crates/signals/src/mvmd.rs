@@ -372,8 +372,8 @@ impl MVMD {
             n += 1;
             residual_diff /= self.num_tpoints as f64;
 
-            // Log progress at INFO level so it's visible, every 5 iterations
-            if n % 5 == 0 || n == 1 {
+            // Log progress at INFO level so it's visible, every 10 iterations
+            if n % 10 == 0 || n == 1 {
                 info!(
                     iteration = n,
                     max_iterations = self.admm_config.max_iterations,
