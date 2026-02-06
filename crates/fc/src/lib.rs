@@ -1,3 +1,4 @@
+use ndarray::Array2;
 use polars::prelude::*;
 
 #[derive(Clone)]
@@ -21,6 +22,21 @@ impl<State> ConnectivityMatrix<State> {
 
     pub fn get_values(&self) -> DataFrame {
         self.data.clone()
+    }
+
+    /// Converts the connectivity matrix into an ndarray Array2<f64>.
+    /// Iterates column-by-column using the stored labels.
+    pub fn to_ndarray(&self) -> PolarsResult<Array2<f64>> {
+        let n = self.labels.len();
+        let mut matrix = Array2::<f64>::zeros((n, n));
+        for (i, label) in self.labels.iter().enumerate() {
+            let col = self.data.column(label.as_str())?;
+            let values = col.f64()?;
+            for (j, val) in values.iter().enumerate() {
+                matrix[[i, j]] = val.unwrap_or(f64::NAN);
+            }
+        }
+        Ok(matrix)
     }
 }
 

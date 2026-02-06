@@ -25,8 +25,12 @@ pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
     let filter_dir = &cfg.filter_dir;
     let filtered_subjects = [
         filter_dir.join("healthy_controls.csv"),
-        filter_dir.join("low_anhedonic.csv"),
-        filter_dir.join("high_anhedonic.csv"),
+        filter_dir.join("shaps_low_anhedonic.csv"),
+        filter_dir.join("shaps_high_anhedonic.csv"),
+        filter_dir.join("teps_anticipatory_anhedonic.csv"),
+        filter_dir.join("teps_anticipatory_non_anhedonic.csv"),
+        filter_dir.join("teps_anticipatory_anhedonic.csv"),
+        filter_dir.join("teps_anticipatory_non_anhedonic.csv"),
     ];
 
     let dataframes: Vec<LazyFrame> = filtered_subjects
@@ -45,7 +49,9 @@ pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
         })
         .collect();
 
-    let subjects = concat(dataframes, UnionArgs::default())?.collect()?;
+    let subjects = concat(dataframes, UnionArgs::default())?
+        .unique(Some(cols(["subjectkey"])), UniqueKeepStrategy::Any)
+        .collect()?;
     let subject_keys = subjects.column("subjectkey")?.str()?;
     let total_subjects = subject_keys.len();
 
@@ -96,9 +102,26 @@ pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
         }
 
         let mni_results_dir = subject_dir.join("MNINonLinear").join("Results");
-        let files_to_preprocess = [mni_results_dir
-            .join("task-hammerAP_run-01_bold")
-            .join("task-hammerAP_run-01_bold.nii.gz")];
+        let files_to_preprocess = [
+            // Harari-Hammer task
+            mni_results_dir
+                .join("task-hammerAP_run-01_bold")
+                .join("task-hammerAP_run-01_bold.nii.gz"),
+            // Resting state AP encoding
+            mni_results_dir
+                .join("task-restAP_run-01_bold")
+                .join("task-restAP_run-01_bold.nii.gz"),
+            mni_results_dir
+                .join("task-restAP_run-02_bold")
+                .join("task-restAP_run-02_bold.nii.gz"),
+            // Resting state PA encoding
+            mni_results_dir
+                .join("task-restPA_run-01_bold")
+                .join("task-restPA_run-01_bold.nii.gz"),
+            mni_results_dir
+                .join("task-restPA_run-02_bold")
+                .join("task-restPA_run-02_bold.nii.gz"),
+        ];
 
         for file_path in files_to_preprocess {
             if !file_path.exists() {
@@ -133,7 +156,7 @@ pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
                     task_name = task_name,
                     reason = "already_preprocessed",
                     output_file = %output_path.display(),
-                    "skipping subject (already preprocessed, use --force to reprocess)"
+                    "skipping file (already preprocessed, use --force to reprocess)"
                 );
                 continue;
             }

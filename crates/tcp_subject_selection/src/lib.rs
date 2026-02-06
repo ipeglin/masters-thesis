@@ -58,6 +58,7 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
     let required_files: Vec<PathBuf> = vec![
         phenotype_dir.join("demos.tsv"),
         phenotype_dir.join("shaps01.tsv"),
+        phenotype_dir.join("teps01.tsv"),
     ];
     required_files.iter().try_for_each(|file_path| {
         if !file_path.is_file() && !annex::is_broken_symlink(file_path) {
@@ -185,7 +186,7 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
     }
 
     if !shaps_path.exists() {
-        panic!("could not find shaps.tsv file");
+        panic!("could not find shaps01.tsv file");
     }
 
     let shaps_path = shaps_path.to_str().expect("File path could not be parsed"); // shadowing
@@ -216,7 +217,7 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
         .collect()?;
 
     polars_csv::write_dataframe(
-        filter_output_dir.join("non_anhedonic.csv"),
+        filter_output_dir.join("shaps_non_anhedonic.csv"),
         &non_anhedonic_df,
     )?;
 
@@ -232,7 +233,7 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    polars_csv::write_dataframe(filter_output_dir.join("anhedonic.csv"), &anhedonic_df)?;
+    polars_csv::write_dataframe(filter_output_dir.join("shaps_anhedonic.csv"), &anhedonic_df)?;
 
     // Low-anhedonic subjects
     let low_anhedonic_df = LazyCsvReader::new(PlPath::from_str(shaps_path))
@@ -247,7 +248,7 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
         .collect()?;
 
     polars_csv::write_dataframe(
-        filter_output_dir.join("low_anhedonic.csv"),
+        filter_output_dir.join("shaps_low_anhedonic.csv"),
         &low_anhedonic_df,
     )?;
 
@@ -264,22 +265,164 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
         .collect()?;
 
     polars_csv::write_dataframe(
-        filter_output_dir.join("high_anhedonic.csv"),
+        filter_output_dir.join("shaps_high_anhedonic.csv"),
         &high_anhedonic_df,
+    )?;
+
+    /////////////////////////
+    // Apply TEPS Filters //
+    /////////////////////////
+
+    // Check teps file is available
+    let teps_path = dataset_dir.join("phenotype").join("teps01.tsv");
+    match annex::get_file_from_annex(dataset_dir, &teps_path) {
+        Ok(_) => {
+            info!("Fetched file from annex: {}", teps_path.display());
+        }
+        Err(e @ annex::AnnexError::AlreadyExists(_)) => {
+            info!("{}", e);
+        }
+        Err(e @ annex::AnnexError::UnbrokenSymlink(_)) => {
+            warn!("{}", e);
+        }
+        Err(e) => {
+            panic!("{}", e);
+        }
+    }
+
+    if !teps_path.exists() {
+        panic!("could not find teps01.tsv file");
+    }
+
+    let teps_path = teps_path.to_str().expect("File path could not be parsed"); // shadowing
+
+    // Load TEPS data once with scores, filtering out 999 values
+    let teps_valid_df = LazyCsvReader::new(PlPath::from_str(teps_path))
+        .with_separator(b'\t')
+        .with_has_header(true)
+        .with_ignore_errors(true)
+        .finish()?
+        .filter(col("teps_ap").neq(lit(999))) // Anticipatory Pleasure Score
+        .filter(col("teps_cp").neq(lit(999))) // Consummatory Pleasure Score
+        .unique(Some(cols(["subjectkey"])), UniqueKeepStrategy::Any)
+        .select([col("subjectkey"), col("teps_ap"), col("teps_cp")])
+        .collect()?;
+
+    // Available TEPS subjects
+    let teps_df = teps_valid_df
+        .clone()
+        .lazy()
+        .select([col("subjectkey")])
+        .collect()?;
+    polars_csv::write_dataframe(filter_output_dir.join("teps.csv"), &teps_df)?;
+
+    // Compute mean and std for anticipatory and consummatory pleasure scores
+    let teps_stats = teps_valid_df
+        .clone()
+        .lazy()
+        .select([
+            col("teps_ap").mean().alias("ap_mean"),
+            col("teps_ap").std(1).alias("ap_std"),
+            col("teps_cp").mean().alias("cp_mean"),
+            col("teps_cp").std(1).alias("cp_std"),
+        ])
+        .collect()?;
+
+    let ap_mean = teps_stats.column("ap_mean")?.f64()?.get(0).unwrap();
+    let ap_std = teps_stats.column("ap_std")?.f64()?.get(0).unwrap();
+    let cp_mean = teps_stats.column("cp_mean")?.f64()?.get(0).unwrap();
+    let cp_std = teps_stats.column("cp_std")?.f64()?.get(0).unwrap();
+
+    let ap_threshold = ap_mean - 2.0 * ap_std;
+    let cp_threshold = cp_mean - 2.0 * cp_std;
+
+    info!(
+        "TEPS-ANT stats: mean={:.2}, std={:.2}, anhedonia threshold={:.2}",
+        ap_mean, ap_std, ap_threshold
+    );
+    info!(
+        "TEPS-CON stats: mean={:.2}, std={:.2}, anhedonia threshold={:.2}",
+        cp_mean, cp_std, cp_threshold
+    );
+
+    // Anticipatory anhedonic: scoring more than 2 SD below mean on teps_ap
+    let teps_anticipatory_anhedonic_df = teps_valid_df
+        .clone()
+        .lazy()
+        .filter(col("teps_ap").lt(lit(ap_threshold)))
+        .select([col("subjectkey")])
+        .collect()?;
+
+    polars_csv::write_dataframe(
+        filter_output_dir.join("teps_anticipatory_anhedonic.csv"),
+        &teps_anticipatory_anhedonic_df,
+    )?;
+
+    // Anticipatory non-anhedonic: scoring at or above the threshold on teps_ap
+    let teps_anticipatory_non_anhedonic_df = teps_valid_df
+        .clone()
+        .lazy()
+        .filter(col("teps_ap").gt_eq(lit(ap_threshold)))
+        .select([col("subjectkey")])
+        .collect()?;
+
+    polars_csv::write_dataframe(
+        filter_output_dir.join("teps_anticipatory_non_anhedonic.csv"),
+        &teps_anticipatory_non_anhedonic_df,
+    )?;
+
+    // Consummatory anhedonic: scoring more than 2 SD below mean on teps_cp
+    let teps_consummatory_anhedonic_df = teps_valid_df
+        .clone()
+        .lazy()
+        .filter(col("teps_cp").lt(lit(cp_threshold)))
+        .select([col("subjectkey")])
+        .collect()?;
+
+    polars_csv::write_dataframe(
+        filter_output_dir.join("teps_consummatory_anhedonic.csv"),
+        &teps_consummatory_anhedonic_df,
+    )?;
+
+    // Consummatory non-anhedonic: scoring at or above the threshold on teps_cp
+    let teps_consummatory_non_anhedonic_df = teps_valid_df
+        .lazy()
+        .filter(col("teps_cp").gt_eq(lit(cp_threshold)))
+        .select([col("subjectkey")])
+        .collect()?;
+
+    polars_csv::write_dataframe(
+        filter_output_dir.join("teps_consummatory_non_anhedonic.csv"),
+        &teps_consummatory_non_anhedonic_df,
     )?;
 
     /////////////////////
     // Combine Filters //
     /////////////////////
 
-    // Healthy Controls
-    let healthy_controls_df = genpop_df.join(
-        &non_anhedonic_df,
-        ["subjectkey"],
-        ["subjectkey"],
-        JoinArgs::new(JoinType::Inner), // intersection
-        None,                           // Suffix for duplicate columns
-    )?;
+    // Healthy Controls (GenPop + SHAPS non-anhedonic + TEPS non-anhedonic on both subscales)
+    let healthy_controls_df = genpop_df
+        .join(
+            &non_anhedonic_df,
+            ["subjectkey"],
+            ["subjectkey"],
+            JoinArgs::new(JoinType::Inner),
+            None,
+        )?
+        .join(
+            &teps_anticipatory_non_anhedonic_df,
+            ["subjectkey"],
+            ["subjectkey"],
+            JoinArgs::new(JoinType::Inner),
+            None,
+        )?
+        .join(
+            &teps_consummatory_non_anhedonic_df,
+            ["subjectkey"],
+            ["subjectkey"],
+            JoinArgs::new(JoinType::Inner),
+            None,
+        )?;
 
     polars_csv::write_dataframe(
         filter_output_dir.join("healthy_controls.csv"),
