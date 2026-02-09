@@ -153,7 +153,7 @@ pub fn run(cfg: &ISTARTSubjectSelectionConfig) -> Result<()> {
 
     // Compute per-participant mean for anticipatory and consummatory scores.
     // Cast score columns to f64 (treating "n/a" as null via ignore_errors) and
-    // use horizontal mean which skips nulls automatically.
+    // use horizontal mean which skips nulls automatically via as_struct().mean().
     let ant_exprs: Vec<Expr> = anticipatory_cols
         .iter()
         .map(|&c| col(c).cast(DataType::Float64))
@@ -166,8 +166,8 @@ pub fn run(cfg: &ISTARTSubjectSelectionConfig) -> Result<()> {
     let teps_scored_df = teps_valid_df
         .lazy()
         .with_columns([
-            mean_horizontal(ant_exprs, true)?.alias("teps_ant_mean"),
-            mean_horizontal(con_exprs, true)?.alias("teps_con_mean"),
+            as_struct(ant_exprs).mean().alias("teps_ant_mean"),
+            as_struct(con_exprs).mean().alias("teps_con_mean"),
         ])
         .select([
             col("participant_id"),
