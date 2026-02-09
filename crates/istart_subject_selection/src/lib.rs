@@ -102,28 +102,10 @@ pub fn run(cfg: &ISTARTSubjectSelectionConfig) -> Result<()> {
     fs::create_dir_all(&filter_output_dir)?;
 
     // Declare TEPS score categories
-    let anticipatory_cols = [
-        "score_teps_q1",
-        "score_teps_q3",
-        "score_teps_q7",
-        "score_teps_q11",
-        "score_teps_q12",
-        "score_teps_q14",
-        "score_teps_q15",
-        "score_teps_q16",
-        "score_teps_q17",
-        "score_teps_q18",
-    ];
-    let consummatory_cols = [
-        "score_teps_q2",
-        "score_teps_q4",
-        "score_teps_q5",
-        "score_teps_q6",
-        "score_teps_q8",
-        "score_teps_q9",
-        "score_teps_q10",
-        "score_teps_q13",
-    ];
+    let anticipatory_cols = ["1", "3", "7", "11", "12", "14", "15", "16", "17", "18"]
+        .map(|i| format!("score_teps_q{}", i));
+    let consummatory_cols =
+        ["2", "4", "5", "6", "8", "9", "10", "13"].map(|i| format!("score_teps_q{}", i));
 
     // Load TEPS data once with all score columns
     let mut select_exprs: Vec<Expr> = vec![col("participant_id")];
@@ -131,7 +113,7 @@ pub fn run(cfg: &ISTARTSubjectSelectionConfig) -> Result<()> {
         anticipatory_cols
             .iter()
             .chain(consummatory_cols.iter())
-            .map(|&c| col(c)),
+            .map(|c| col(c)),
     );
 
     let teps_valid_df = LazyCsvReader::new(PlPath::from_str(teps_path))
@@ -156,11 +138,11 @@ pub fn run(cfg: &ISTARTSubjectSelectionConfig) -> Result<()> {
     // use horizontal mean which skips nulls automatically via as_struct().mean().
     let ant_exprs: Vec<Expr> = anticipatory_cols
         .iter()
-        .map(|&c| col(c).cast(DataType::Float64))
+        .map(|c| col(c).cast(DataType::Float64))
         .collect();
     let con_exprs: Vec<Expr> = consummatory_cols
         .iter()
-        .map(|&c| col(c).cast(DataType::Float64))
+        .map(|c| col(c).cast(DataType::Float64))
         .collect();
 
     let teps_scored_df = teps_valid_df
