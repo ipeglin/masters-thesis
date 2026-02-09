@@ -17,7 +17,7 @@ anyhow = "1"
 hdf5 = "0.8"
 ndarray = "0.15.6"
 nifti = { version = "0.17.0", features = ["ndarray_volumes", "ndarray"] }
-polars  = { version = "0.52.0", features = ["csv", "lazy", "regex", "timezones", "strings", "dtype-full", "round_series", "trigonometry"] }
+polars  = { version = "0.52.0", features = ["csv", "lazy", "regex", "timezones", "strings", "dtype-full", "round_series", "trigonometry", "polars-ops"] }
 polars-io = "0.52.0"
 rustfft = "6.4.1"
 serde = { version = "1", features = ["derive"] }
