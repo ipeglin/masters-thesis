@@ -191,28 +191,48 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
 
     let shaps_path = shaps_path.to_str().expect("File path could not be parsed"); // shadowing
 
-    // Available SHAPS
-    let shaps_df = LazyCsvReader::new(PlPath::from_str(shaps_path))
+    // Load SHAPS data and compute corrected scores from individual items
+    // shaps[1-14]a items: 0 or 1 are valid scores, -9 means unanswered
+    let shaps_item_cols: Vec<_> = (1..=14).map(|i| format!("shaps{}a", i)).collect();
+
+    let shaps_valid_df = LazyCsvReader::new(PlPath::from_str(shaps_path))
         .with_separator(b'\t')
         .with_has_header(true)
         .with_ignore_errors(true)
         .finish()?
-        .filter(col("shaps_total").neq(lit(999)))
-        .unique(Some(cols(["subjectkey"])), UniqueKeepStrategy::Any) // Get unique entries
+        .with_column(col("shaps_8a").alias("shaps8a")) // Fix typo in column 8 name
+        .filter(col("shaps_total").neq(lit(999))) // Exclude subjects with invalid total
+        .with_column(
+            // Sum only valid scores (0 or 1), treating -9 as 0
+            shaps_item_cols
+                .iter()
+                .map(|col_name| {
+                    when(col(col_name).eq(lit(0)).or(col(col_name).eq(lit(1))))
+                        .then(col(col_name))
+                        .otherwise(lit(0))
+                })
+                .reduce(|acc, expr| acc + expr)
+                .unwrap()
+                .alias("shaps_computed_total"),
+        )
+        .unique(Some(cols(["subjectkey"])), UniqueKeepStrategy::Any)
+        .select([col("subjectkey"), col("shaps_computed_total")])
+        .collect()?;
+
+    // Available SHAPS subjects
+    let shaps_df = shaps_valid_df
+        .clone()
+        .lazy()
         .select([col("subjectkey")])
         .collect()?;
 
     polars_csv::write_dataframe(filter_output_dir.join("shaps.csv"), &shaps_df)?;
 
-    // Non-anhedonic
-    let non_anhedonic_df = LazyCsvReader::new(PlPath::from_str(shaps_path))
-        .with_separator(b'\t')
-        .with_has_header(true)
-        .with_ignore_errors(true)
-        .finish()?
-        .filter(col("shaps_total").neq(lit(999)))
-        .filter(col("shaps_total").lt(lit(3))) // non-anhedonic scores are 0–2
-        .unique(Some(cols(["subjectkey"])), UniqueKeepStrategy::Any) // Get unique entries
+    // Non-anhedonic: computed scores are 0–2
+    let non_anhedonic_df = shaps_valid_df
+        .clone()
+        .lazy()
+        .filter(col("shaps_computed_total").lt(lit(3)))
         .select([col("subjectkey")])
         .collect()?;
 
@@ -221,29 +241,21 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
         &non_anhedonic_df,
     )?;
 
-    // Anhedonic subjects
-    let anhedonic_df = LazyCsvReader::new(PlPath::from_str(shaps_path))
-        .with_separator(b'\t')
-        .with_has_header(true)
-        .with_ignore_errors(true)
-        .finish()?
-        .filter(col("shaps_total").neq(lit(999)))
-        .filter(col("shaps_total").gt_eq(lit(3))) // anhedonic scores are 3–14
-        .unique(Some(cols(["subjectkey"])), UniqueKeepStrategy::Any) // Get unique entries
+    // Anhedonic subjects: computed scores are 3–14
+    let anhedonic_df = shaps_valid_df
+        .clone()
+        .lazy()
+        .filter(col("shaps_computed_total").gt_eq(lit(3)))
         .select([col("subjectkey")])
         .collect()?;
 
     polars_csv::write_dataframe(filter_output_dir.join("shaps_anhedonic.csv"), &anhedonic_df)?;
 
-    // Low-anhedonic subjects
-    let low_anhedonic_df = LazyCsvReader::new(PlPath::from_str(shaps_path))
-        .with_separator(b'\t')
-        .with_has_header(true)
-        .with_ignore_errors(true)
-        .finish()?
-        .filter(col("shaps_total").neq(lit(999)))
-        .filter(col("shaps_total").gt_eq(lit(3))) // low-anhedonic scores are 3–14
-        .unique(Some(cols(["subjectkey"])), UniqueKeepStrategy::Any) // Get unique entries
+    // Low-anhedonic subjects: computed scores are 3–14
+    let low_anhedonic_df = shaps_valid_df
+        .clone()
+        .lazy()
+        .filter(col("shaps_computed_total").gt_eq(lit(3)))
         .select([col("subjectkey")])
         .collect()?;
 
@@ -252,15 +264,10 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
         &low_anhedonic_df,
     )?;
 
-    // High-anhedonic subjects
-    let high_anhedonic_df = LazyCsvReader::new(PlPath::from_str(shaps_path))
-        .with_separator(b'\t')
-        .with_has_header(true)
-        .with_ignore_errors(true)
-        .finish()?
-        .filter(col("shaps_total").neq(lit(999)))
-        .filter(col("shaps_total").gt_eq(lit(3))) // low-anhedonic scores are 3–14
-        .unique(Some(cols(["subjectkey"])), UniqueKeepStrategy::Any) // Get unique entries
+    // High-anhedonic subjects: computed scores are 3–14
+    let high_anhedonic_df = shaps_valid_df
+        .lazy()
+        .filter(col("shaps_computed_total").gt_eq(lit(3)))
         .select([col("subjectkey")])
         .collect()?;
 
