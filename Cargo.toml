@@ -9,7 +9,6 @@ members = [
   "crates/tcp_subject_selection",
   "crates/tcp_fmri_preprocess",
   "crates/tcp_fmri_process",
-  "crates/istart_subject_selection",
 ]
 
 [workspace.dependencies]

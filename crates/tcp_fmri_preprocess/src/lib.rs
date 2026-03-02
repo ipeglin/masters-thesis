@@ -1,7 +1,7 @@
 use anyhow::Result;
-use config::{polars_csv, TCPfMRIPreprocessConfig};
-use ndarray::{s, Array2};
-use nifti_masker::{preprocess_signals, LabelsMasker, MaskerSignalConfig, Standardize};
+use config::{TCPfMRIPreprocessConfig, polars_csv};
+use ndarray::{Array2, s};
+use nifti_masker::{LabelsMasker, MaskerSignalConfig, Standardize, preprocess_signals};
 use polars::prelude::*;
 use std::path::Path;
 use std::time::Instant;
