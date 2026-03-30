@@ -1,9 +1,10 @@
 use anyhow::Result;
+use config::bids_filename::{BidsFilename, find_bids_files};
 use config::{TCPfMRIPreprocessConfig, polars_csv};
 use ndarray::{Array2, s};
 use nifti_masker::{LabelsMasker, MaskerSignalConfig, Standardize, preprocess_signals};
 use polars::prelude::*;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 use tracing::{debug, info, info_span, warn};
 
@@ -101,23 +102,17 @@ pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
             continue;
         }
 
-        let suffixes = [
-            // Harari-Hammer task
-            "_task-hammerAP_run-01_space-MNI152NLin2009cAsym_res-2_desc-preproc_bold.nii.gz",
-            // Resting state AP encoding
-            "_task-restAP_run-01_space-MNI152NLin2009cAsym_res-2_desc-preproc_bold.nii.gz",
-            "_task-restAP_run-02_space-MNI152NLin2009cAsym_res-2_desc-preproc_bold.nii.gz",
-        ];
-
         let mni_results_dir = subject_dir.join("func");
-        let files_to_preprocess: Vec<PathBuf> = suffixes
-            .iter()
-            .map(|suffix| {
-                // Construct the filename first, then join it to the directory
-                let filename = format!("sub-{}{}", subject_key.replace("_", ""), suffix);
-                mni_results_dir.join(filename)
-            })
-            .collect();
+        let files_to_preprocess = find_bids_files(
+            &mni_results_dir,
+            &[
+                ("space", "MNI152NLin2009cAsym"),
+                ("res", "2"),
+                ("desc", "preproc"),
+            ],
+            Some("bold"),
+            Some(".nii.gz"),
+        );
 
         for file_path in files_to_preprocess {
             if !file_path.exists() {
@@ -133,10 +128,10 @@ pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
                 continue;
             }
 
-            let task_name = file_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown");
+            let task_name =
+                BidsFilename::parse(file_path.file_name().and_then(|n| n.to_str()).unwrap_or(""))
+                    .without(&["sub"])
+                    .to_stem();
 
             // Check if output already exists (skip unless --force)
             let output_path = cfg

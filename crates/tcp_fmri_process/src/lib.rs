@@ -2,6 +2,7 @@ mod atlas;
 mod timeseries;
 
 use anyhow::Result;
+use config::bids_filename::{BidsFilename, find_bids_files};
 use config::TCPfMRIProcessConfig;
 use fc::ConnectivityMatrix;
 use ndarray::{Array2, Array3};
@@ -48,13 +49,17 @@ pub fn run(cfg: &TCPfMRIProcessConfig) -> Result<()> {
     }
 
     // Check if fMRI file available
-    let required_scan_suffixes = [String::from(
-        "_task-hammerAP_run-01_space-MNI152NLin2009cAsym_res-2_desc-preproc_bold.nii.h5",
-    )];
+    let required_scan_pairs: &[(&str, &str)] = &[
+        ("task", "hammerAP"),
+        ("run", "01"),
+        ("space", "MNI152NLin2009cAsym"),
+        ("res", "2"),
+        ("desc", "preproc"),
+    ];
     let subjects_for_processing = filter_subjects_with_files(
         &cfg.fmri_dir,
         subjects_for_processing,
-        &required_scan_suffixes,
+        required_scan_pairs,
     );
 
     let total_subjects = subjects_for_processing.len();
@@ -88,27 +93,27 @@ pub fn run(cfg: &TCPfMRIProcessConfig) -> Result<()> {
         .entered();
 
         let fmri_subject_dir = cfg.fmri_dir.join(subject);
+        let task_files = find_bids_files(
+            &fmri_subject_dir,
+            required_scan_pairs,
+            Some("bold"),
+            Some(".h5"),
+        );
 
-        for suffix in &required_scan_suffixes {
+        for filepath in &task_files {
             let file_start = Instant::now();
 
-            // Load HDF5 file with parcellated timeseries
-            let filename = format!("sub-{}{}", subject.replace("_", ""), suffix);
-            let filepath = fmri_subject_dir.join(filename);
-            let file_name = filepath
-                .file_stem()
-                .and_then(|os| os.to_str())
-                .map(|s| s.replace(".nii", ""));
-            let task_name = file_name.as_deref().unwrap_or("unknown");
+            // Derive task name by stripping the subject pair — shared across all subjects
+            let task_name = BidsFilename::parse(
+                filepath.file_name().and_then(|n| n.to_str()).unwrap_or(""),
+            )
+            .without(&["sub"])
+            .to_stem();
+            let task_name = task_name.as_str();
 
             // Check if subject already exists in output files (skip unless --force)
-            let connectivity_path = output_dir.join(
-                file_name
-                    .as_ref()
-                    .map_or("connectivity.h5".to_string(), |val| {
-                        format!("{}__connectivity.h5", val)
-                    }),
-            );
+            let connectivity_path =
+                output_dir.join(format!("{}__connectivity.h5", task_name));
             let subject_already_exists = subject_exists_in_h5(&connectivity_path, subject);
             if subject_already_exists && !cfg.force {
                 skipped_count += 1;
@@ -216,11 +221,7 @@ pub fn run(cfg: &TCPfMRIProcessConfig) -> Result<()> {
             let fc_z_matrix = z_matrix.to_ndarray()?;
 
             // Write whole-signal connectivity to HDF5
-            let fc_output_file = file_name
-                .as_ref()
-                .map_or("connectivity.h5".to_string(), |val| {
-                    format!("{}__connectivity.h5", val)
-                });
+            let fc_output_file = format!("{}__connectivity.h5", task_name);
             let fc_connectivity_data = ConnectivityData {
                 corr_matrix: fc_corr_matrix,
                 z_matrix: fc_z_matrix,
@@ -243,11 +244,7 @@ pub fn run(cfg: &TCPfMRIProcessConfig) -> Result<()> {
             );
 
             // Write BOLD timeseries to HDF5
-            let timeseries_output_file = file_name
-                .as_ref()
-                .map_or("timeseries.h5".to_string(), |val| {
-                    format!("{}__timeseries.h5", val)
-                });
+            let timeseries_output_file = format!("{}__timeseries.h5", task_name);
 
             let timeseries_data = match TimeseriesData::new(full_df.clone()) {
                 Ok(ts) => ts,
@@ -306,11 +303,7 @@ pub fn run(cfg: &TCPfMRIProcessConfig) -> Result<()> {
             let signal_decomposition = mvmd.decompose(num_modes);
             let mvmd_duration_ms = mvmd_start.elapsed().as_millis();
 
-            let mvmd_output_file = file_name
-                .as_ref()
-                .map_or("mvmd_decomposition.h5".to_string(), |val| {
-                    format!("{}__mvmd_decomposition.h5", val)
-                });
+            let mvmd_output_file = format!("{}__mvmd_decomposition.h5", task_name);
             append_mvmd_results_h5(
                 &output_dir.join(&mvmd_output_file),
                 subject,
@@ -397,11 +390,7 @@ pub fn run(cfg: &TCPfMRIProcessConfig) -> Result<()> {
             let mode_fc_duration_ms = mode_fc_start.elapsed().as_millis();
 
             // Write mode connectivity to HDF5
-            let mode_fc_output_file = file_name
-                .as_ref()
-                .map_or("mode_connectivity.h5".to_string(), |val| {
-                    format!("{}__mode_connectivity.h5", val)
-                });
+            let mode_fc_output_file = format!("{}__mode_connectivity.h5", task_name);
             let mode_connectivity_data = ModeConnectivityData {
                 corr_matrices,
                 z_matrices,
@@ -521,16 +510,13 @@ fn filter_valid_subjects(
 fn filter_subjects_with_files(
     fmri_dir: &PathBuf,
     subjects: Vec<String>,
-    file_suffixes: &[String],
+    required_pairs: &[(&str, &str)],
 ) -> Vec<String> {
     subjects
         .into_iter()
         .filter(|subject| {
             let subject_dir = fmri_dir.join(subject);
-            file_suffixes.iter().all(|suffix| {
-                let filename = format!("sub-{}{}", subject.replace("_", ""), suffix);
-                subject_dir.join(filename).exists()
-            })
+            !find_bids_files(&subject_dir, required_pairs, Some("bold"), Some(".h5")).is_empty()
         })
         .collect()
 }

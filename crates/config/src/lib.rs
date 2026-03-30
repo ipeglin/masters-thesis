@@ -1,4 +1,5 @@
 pub mod annex;
+pub mod bids_filename;
 pub mod polars_csv;
 pub mod tcp_config;
 
