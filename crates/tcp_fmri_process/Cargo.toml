@@ -17,4 +17,5 @@ tracing = { workspace = true }
 
 config = { path = "../config" }
 fc = { path = "../fc" }
+hdf5_io = { path = "../hdf5_io" }
 signals = { path = "../signals" }

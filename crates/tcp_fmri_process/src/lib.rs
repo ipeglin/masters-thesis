@@ -2,14 +2,13 @@ mod atlas;
 mod timeseries;
 
 use anyhow::Result;
+use config::TcpFmriProcessConfig;
 use config::bids_filename::{BidsFilename, find_bids_files};
-use config::TCPfMRIProcessConfig;
+use config::bids_subject_id::BidsSubjectId;
 use fc::ConnectivityMatrix;
 use ndarray::{Array2, Array3};
 use polars::prelude::*;
-use signals::admm::ADMMConfig;
-use signals::mvmd::{MVMD, MVMDResult};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -17,13 +16,13 @@ use std::{fs, io};
 use tracing::{debug, info, info_span, warn};
 
 use atlas::{BrainAtlas, RoiType};
-use timeseries::TimeseriesData;
+use hdf5_io::{H5Attr, write_attrs, write_dataset};
 
-pub fn run(cfg: &TCPfMRIProcessConfig) -> Result<()> {
+pub fn run(cfg: &TcpFmriProcessConfig) -> Result<()> {
     let run_start = Instant::now();
 
     info!(
-        fmri_dir = %cfg.fmri_dir.display(),
+        fmri_dir = %cfg.bold_ts_dir.display(),
         subjects = ?cfg.subject_file,
         output_dir = %cfg.output_dir.display(),
         cortical_atlas_lut = %cfg.cortical_atlas_lut.display(),
@@ -33,40 +32,37 @@ pub fn run(cfg: &TCPfMRIProcessConfig) -> Result<()> {
     );
 
     // Load subjects
-    let fmri_dir = &cfg.fmri_dir;
-    let available_subjects = get_directory_subject_directories(fmri_dir);
+    let bold_dir = &cfg.bold_ts_dir;
+    let available_subjects = get_directory_subject_directories(bold_dir);
     let total_subjects_available = available_subjects.len();
     if total_subjects_available == 0 {
         panic!("no subject fMRI data found");
     }
 
     let target_subjects = cfg.subject_file.as_ref().map(read_subjects_file);
-
     let subjects_for_processing = filter_valid_subjects(available_subjects, target_subjects);
-
     if subjects_for_processing.is_empty() {
         panic!("no applicable subjects found for processing");
     }
 
     // Check if fMRI file available
-    let required_scan_pairs: &[(&str, &str)] = &[
+    let hammer_task_scan_pairs: &[(&str, &str)] = &[
         ("task", "hammerAP"),
         ("run", "01"),
         ("space", "MNI152NLin2009cAsym"),
         ("res", "2"),
         ("desc", "preproc"),
     ];
-    let subjects_for_processing = filter_subjects_with_files(
-        &cfg.fmri_dir,
+    let subject_hammer_map = map_subjects_with_files(
+        &cfg.bold_ts_dir,
         subjects_for_processing,
-        required_scan_pairs,
+        hammer_task_scan_pairs,
     );
-
-    let total_subjects = subjects_for_processing.len();
+    let total_hammer_subjects = subject_hammer_map.len();
 
     info!(
-        total_subjects_available = total_subjects_available,
-        total_subjects_for_processing = total_subjects,
+        total_subjects_with_hammer_available = total_subjects_available,
+        total_subjects_with_hammer = total_hammer_subjects,
         "loaded subjects for processing",
     );
 
@@ -80,47 +76,41 @@ pub fn run(cfg: &TCPfMRIProcessConfig) -> Result<()> {
     let mut skipped_count = 0usize;
     let mut error_count = 0usize;
 
-    for (i, subject) in subjects_for_processing.iter().enumerate() {
+    for (i, (subject_id, hammer_files)) in subject_hammer_map.iter().enumerate() {
         let subject_idx = i + 1;
 
         // Create a span for the entire subject processing
         let _subject_span = info_span!(
             "process_subject",
-            subject = subject,
+            subject = subject_id,
             subject_idx = subject_idx,
-            total_subjects = total_subjects,
+            total_subjects = total_hammer_subjects,
         )
         .entered();
 
-        let fmri_subject_dir = cfg.fmri_dir.join(subject);
-        let task_files = find_bids_files(
-            &fmri_subject_dir,
-            required_scan_pairs,
-            Some("bold"),
-            Some(".h5"),
-        );
-
-        for filepath in &task_files {
+        for file_path in hammer_files {
             let file_start = Instant::now();
 
             // Derive task name by stripping the subject pair — shared across all subjects
-            let task_name = BidsFilename::parse(
-                filepath.file_name().and_then(|n| n.to_str()).unwrap_or(""),
-            )
-            .without(&["sub"])
-            .to_stem();
+            let task_name =
+                BidsFilename::parse(file_path.file_name().and_then(|n| n.to_str()).unwrap_or(""))
+                    .without(&["sub"])
+                    .to_stem();
             let task_name = task_name.as_str();
 
+            let fc_output_file = format!("{}_fc.h5", task_name);
+            let timeseries_output_file = format!("{}_ts.h5", task_name);
+
+            // TODO: Change this to use a manifest file written at the end of the processing pipeline
             // Check if subject already exists in output files (skip unless --force)
-            let connectivity_path =
-                output_dir.join(format!("{}__connectivity.h5", task_name));
-            let subject_already_exists = subject_exists_in_h5(&connectivity_path, subject);
+            let connectivity_path = output_dir.join(format!("{}_connectivity.h5", task_name));
+            let subject_already_exists = subject_exists_in_h5(&connectivity_path, subject_id);
             if subject_already_exists && !cfg.force {
                 skipped_count += 1;
                 info!(
-                    subject = subject,
+                    subject = subject_id,
                     subject_idx = subject_idx,
-                    total_subjects = total_subjects,
+                    total_subjects = total_hammer_subjects,
                     task_name = task_name,
                     reason = "already_processed",
                     "skipping file (already exists in output, use --force to reprocess)"
@@ -128,15 +118,16 @@ pub fn run(cfg: &TCPfMRIProcessConfig) -> Result<()> {
                 continue;
             }
 
-            let h5_file = match hdf5::File::open(&filepath) {
+            // Open the HDF file
+            let h5_file = match hdf5::File::open(&file_path) {
                 Ok(f) => f,
                 Err(e) => {
                     skipped_count += 1;
                     warn!(
-                        subject = subject,
+                        subject = subject_id,
                         subject_idx = subject_idx,
-                        total_subjects = total_subjects,
-                        file = %filepath.display(),
+                        total_subjects = total_hammer_subjects,
+                        file = %file_path.display(),
                         error = %e,
                         reason = "failed_to_open_h5",
                         "skipping subject file"
@@ -145,22 +136,22 @@ pub fn run(cfg: &TCPfMRIProcessConfig) -> Result<()> {
                 }
             };
 
-            // Load cortical timeseries dataset (detrended + z-score standardized variant)
+            // Load cortical timeseries dataset
             let load_start = Instant::now();
-            let cortical_ds = h5_file.dataset("tcp_cortical_detrended_standardized")?;
+            let cortical_ds = h5_file.dataset("tcp_cortical_raw")?;
             let cortical_shape = cortical_ds.shape();
             let cortical_data = cortical_ds.read_2d::<f32>()?;
 
-            // Load subcortical timeseries dataset (detrended + z-score standardized variant)
-            let subcortical_ds = h5_file.dataset("tcp_subcortical_detrended_standardized")?;
+            // Load subcortical timeseries dataset
+            let subcortical_ds = h5_file.dataset("tcp_subcortical_raw")?;
             let subcortical_shape = subcortical_ds.shape();
             let subcortical_data = subcortical_ds.read_2d::<f32>()?;
             let load_duration_ms = load_start.elapsed().as_millis();
 
             debug!(
-                subject = subject,
+                subject = subject_id,
                 task_name = task_name,
-                file = %filepath.display(),
+                file = %file_path.display(),
                 cortical_shape = ?cortical_shape,
                 subcortical_shape = ?subcortical_shape,
                 load_duration_ms = load_duration_ms,
@@ -177,16 +168,114 @@ pub fn run(cfg: &TCPfMRIProcessConfig) -> Result<()> {
             let n_rois = full_df.width();
             let n_timepoints = full_df.height();
 
-            // Compute static functional connectivity matrix
-            let fc_start = Instant::now();
-            let corr_matrix = match ConnectivityMatrix::new(full_df.clone()) {
+            ////////////////////////////
+            // Whole-band Time Series //
+            ////////////////////////////
+
+            let ts_labels: Vec<String> = full_df
+                .get_column_names()
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            let ts_n_rois = full_df.width();
+            let ts_n_tp = full_df.height();
+
+            // Build flat (n_timepoints x n_rois) row-major buffer from full_df
+            let mut ts_flat = vec![0f32; ts_n_tp * ts_n_rois];
+            for (col_idx, col_name) in ts_labels.iter().enumerate() {
+                if let Ok(col) = full_df.column(col_name.as_str()) {
+                    if let Ok(values) = col.f32() {
+                        for (row_idx, val) in values.iter().enumerate() {
+                            ts_flat[row_idx * ts_n_rois + col_idx] = val.unwrap_or(f32::NAN);
+                        }
+                    }
+                }
+            }
+
+            let ts_file = hdf5_io::open_or_create(&output_dir.join(&timeseries_output_file))?;
+            let ts_group = hdf5_io::open_or_create_group(&ts_file, subject_id, cfg.force)?;
+
+            write_dataset(
+                &ts_group,
+                "timeseries",
+                &ts_flat,
+                &[ts_n_tp, ts_n_rois],
+                None,
+            )?;
+
+            // For each block group, build a DataFrame via the atlas and write as a single
+            // dataset directly under the subject group (named after the block)
+            let blocks_group = h5_file.group("blocks")?;
+            for block_group in blocks_group.groups()? {
+                let block_cortical_data = block_group.dataset("cortical_raw")?.read_2d::<f32>()?;
+                let block_subcortical_data =
+                    block_group.dataset("subcortical_raw")?.read_2d::<f32>()?;
+
+                let block_df = create_dual_atlas_dataframe(
+                    &block_cortical_data,
+                    &block_subcortical_data,
+                    &atlas,
+                )?;
+                let block_n_rois = block_df.width();
+                let block_n_tp = block_df.height();
+
+                let mut block_flat = vec![0f32; block_n_tp * block_n_rois];
+                for (col_idx, col_name) in ts_labels.iter().enumerate() {
+                    if let Ok(col) = block_df.column(col_name.as_str()) {
+                        if let Ok(values) = col.f32() {
+                            for (row_idx, val) in values.iter().enumerate() {
+                                block_flat[row_idx * block_n_rois + col_idx] =
+                                    val.unwrap_or(f32::NAN);
+                            }
+                        }
+                    }
+                }
+
+                let block_name = block_group.name();
+                let block_leaf = block_name.rsplit('/').next().unwrap_or(block_name.as_str());
+                write_dataset(
+                    &ts_group,
+                    block_leaf,
+                    &block_flat,
+                    &[block_n_tp, block_n_rois],
+                    None,
+                )?;
+            }
+
+            let ts_root = ts_file.group("/")?;
+            if ts_root.attr("labels").is_err() {
+                write_attrs(
+                    &ts_root,
+                    &[
+                        H5Attr::string("labels", ts_labels.join(",")),
+                        H5Attr::u32("num_rois", ts_n_rois as u32),
+                    ],
+                )?;
+            }
+
+            debug!(
+                subject = subject_id,
+                task_name = task_name,
+                n_rois = ts_n_rois,
+                n_timepoints = ts_n_tp,
+                output_file = timeseries_output_file,
+                "saved BOLD timeseries"
+            );
+
+            ///////////////////////////////
+            // Whole-band FC Computation //
+            ///////////////////////////////
+
+            // Compute static whole-band functional connectivity matrix
+            let fc_wb_start = Instant::now();
+            let corr_matrix_wb = match ConnectivityMatrix::new(full_df.clone()) {
                 Ok(m) => m,
                 Err(e) => {
                     error_count += 1;
                     warn!(
-                        subject = subject,
+                        subject = subject_id,
                         subject_idx = subject_idx,
-                        total_subjects = total_subjects,
+                        total_subjects = total_hammer_subjects,
                         task_name = task_name,
                         error = %e,
                         reason = "fc_computation_failed",
@@ -197,14 +286,14 @@ pub fn run(cfg: &TCPfMRIProcessConfig) -> Result<()> {
             };
 
             // Compute Fisher Z-transform
-            let z_matrix = match corr_matrix.clone().into_fisher_z() {
+            let z_matrix_wb = match corr_matrix_wb.clone().into_fisher_z() {
                 Ok(m) => m,
                 Err(e) => {
                     error_count += 1;
                     warn!(
-                        subject = subject,
+                        subject = subject_id,
                         subject_idx = subject_idx,
-                        total_subjects = total_subjects,
+                        total_subjects = total_hammer_subjects,
                         task_name = task_name,
                         error = %e,
                         reason = "fisher_transform_failed",
@@ -213,226 +302,291 @@ pub fn run(cfg: &TCPfMRIProcessConfig) -> Result<()> {
                     continue;
                 }
             };
-            let fc_duration_ms = fc_start.elapsed().as_millis();
+            let fc_wb_duration_ms = fc_wb_start.elapsed().as_millis();
 
-            // Extract connectivity data into arrays for HDF5
-            let fc_labels = corr_matrix.labels.clone();
-            let fc_corr_matrix = corr_matrix.to_ndarray()?;
-            let fc_z_matrix = z_matrix.to_ndarray()?;
+            // Write whole-band connectivity to HDF5
+            let fc_output_path = output_dir.join(&fc_output_file);
+            let fc_file = hdf5_io::open_or_create(&fc_output_path)?;
+            let subject_fc_group = hdf5_io::open_or_create_group(&fc_file, subject_id, cfg.force)?;
 
-            // Write whole-signal connectivity to HDF5
-            let fc_output_file = format!("{}__connectivity.h5", task_name);
-            let fc_connectivity_data = ConnectivityData {
-                corr_matrix: fc_corr_matrix,
-                z_matrix: fc_z_matrix,
-                labels: fc_labels.clone(),
-            };
-            append_connectivity_h5(
-                &output_dir.join(&fc_output_file),
-                subject,
-                &fc_connectivity_data,
-                cfg.force,
+            let fc_wb_labels = corr_matrix_wb.labels.clone();
+            let fc_wb_corr_matrix = corr_matrix_wb.to_ndarray()?;
+            let fc_wb_z_matrix = z_matrix_wb.to_ndarray()?;
+            let num_rois_fc = fc_wb_corr_matrix.shape()[0];
+
+            write_dataset(
+                &subject_fc_group,
+                "corr_matrix",
+                fc_wb_corr_matrix.as_slice().unwrap(),
+                &[num_rois_fc, num_rois_fc],
+                None,
+            )?;
+            write_dataset(
+                &subject_fc_group,
+                "z_matrix",
+                fc_wb_z_matrix.as_slice().unwrap(),
+                &[num_rois_fc, num_rois_fc],
+                None,
             )?;
 
+            let fc_root = fc_file.group("/")?;
+            if fc_root.attr("labels").is_err() {
+                write_attrs(
+                    &fc_root,
+                    &[
+                        H5Attr::string("labels", fc_wb_labels.join(",")),
+                        H5Attr::u32("num_rois", num_rois_fc as u32),
+                    ],
+                )?;
+            }
+
             debug!(
-                subject = subject,
+                subject = subject_id,
                 task_name = task_name,
                 n_rois = n_rois,
-                fc_duration_ms = fc_duration_ms,
+                fc_duration_ms = fc_wb_duration_ms,
                 output_file = fc_output_file,
                 "computed whole-signal connectivity"
             );
 
-            // Write BOLD timeseries to HDF5
-            let timeseries_output_file = format!("{}__timeseries.h5", task_name);
+            //////////////////////////////////////////
+            // Block-wise Whole-band FC Computation //
+            //////////////////////////////////////////
 
-            let timeseries_data = match TimeseriesData::new(full_df.clone()) {
-                Ok(ts) => ts,
-                Err(e) => {
-                    error_count += 1;
-                    warn!(
-                        subject = subject,
-                        subject_idx = subject_idx,
-                        total_subjects = total_subjects,
-                        task_name = task_name,
-                        error = %e,
-                        reason = "timeseries_extraction_failed",
-                        "skipping subject due to error"
-                    );
-                    continue;
-                }
-            };
+            let group_path = "blocks";
+            let trial_blocks = h5_file.group(group_path)?;
+            println!("Datasets in group '{}':", group_path);
 
-            append_timeseries_h5(
-                &output_dir.join(&timeseries_output_file),
-                subject,
-                &timeseries_data,
-                cfg.force,
-            )?;
+            // Iterate over datasets directly
+            for block_group in trial_blocks.groups()? {
+                let fc_wb_block_start = Instant::now();
+                println!("Group: {}", block_group.name());
 
-            debug!(
-                subject = subject,
-                task_name = task_name,
-                n_rois = n_rois,
-                n_timepoints = n_timepoints,
-                output_file = timeseries_output_file,
-                "saved BOLD timeseries"
-            );
+                let cortical_ds = block_group.dataset("cortical_raw")?;
+                let cortical_data = cortical_ds.read_2d::<f32>()?;
 
-            // MVMD decomposition
-            let mvmd_start = Instant::now();
-            let admm_config = ADMMConfig::default();
-            let mvmd = match MVMD::from_dataframe(&full_df, 1.0) {
-                Ok(m) => m.with_admm_config(admm_config),
-                Err(e) => {
-                    error_count += 1;
-                    warn!(
-                        subject = subject,
-                        subject_idx = subject_idx,
-                        total_subjects = total_subjects,
-                        task_name = task_name,
-                        error = %e,
-                        reason = "mvmd_init_failed",
-                        "skipping MVMD due to error"
-                    );
-                    continue;
-                }
-            };
+                // Load subcortical timeseries dataset
+                let subcortical_ds = block_group.dataset("subcortical_raw")?;
+                let subcortical_data = subcortical_ds.read_2d::<f32>()?;
 
-            let num_modes = 10;
-            let signal_decomposition = mvmd.decompose(num_modes);
-            let mvmd_duration_ms = mvmd_start.elapsed().as_millis();
+                let block_df =
+                    create_dual_atlas_dataframe(&cortical_data, &subcortical_data, &atlas)?;
+                let n_rois = block_df.width();
+                // let n_timepoints = block_df.height();
 
-            let mvmd_output_file = format!("{}__mvmd_decomposition.h5", task_name);
-            append_mvmd_results_h5(
-                &output_dir.join(&mvmd_output_file),
-                subject,
-                &signal_decomposition,
-                cfg.force,
-            )?;
-
-            debug!(
-                subject = subject,
-                task_name = task_name,
-                num_modes = num_modes,
-                mvmd_iterations = signal_decomposition.num_iterations,
-                mvmd_duration_ms = mvmd_duration_ms,
-                output_file = mvmd_output_file,
-                "computed MVMD decomposition"
-            );
-
-            // Compute connectivity matrices for each MVMD mode
-            let mode_fc_start = Instant::now();
-            let mode_data = signal_decomposition.to_mode_dataframes()?;
-            let num_modes = mode_data.len();
-            let labels: Vec<String> = signal_decomposition.channels.clone();
-            let num_rois = labels.len();
-
-            let mut corr_matrices = Array3::<f64>::zeros((num_modes, num_rois, num_rois));
-            let mut z_matrices = Array3::<f64>::zeros((num_modes, num_rois, num_rois));
-            let mut center_frequencies = Vec::with_capacity(num_modes);
-
-            for mode in mode_data {
-                let mode_idx = mode.mode_index;
-                center_frequencies.push(mode.center_frequency);
-
-                let mode_corr = match ConnectivityMatrix::new(mode.timeseries) {
+                // Compute static whole-band functional connectivity matrix
+                let block_corr_matrix_wb = match ConnectivityMatrix::new(block_df.clone()) {
                     Ok(m) => m,
                     Err(e) => {
+                        error_count += 1;
                         warn!(
-                            subject = subject,
-                            mode_idx = mode_idx,
+                            subject = subject_id,
+                            subject_idx = subject_idx,
+                            total_subjects = total_hammer_subjects,
+                            task_name = task_name,
                             error = %e,
-                            "failed to compute mode correlation matrix, filling with NaN"
+                            reason = "fc_computation_failed",
+                            "skipping subject due to error"
                         );
-                        // Fill this mode with NaN and continue
-                        for i in 0..num_rois {
-                            for j in 0..num_rois {
-                                corr_matrices[[mode_idx, i, j]] = f64::NAN;
-                                z_matrices[[mode_idx, i, j]] = f64::NAN;
-                            }
-                        }
                         continue;
                     }
                 };
-
-                // Extract correlation values into the 3D array
-                let corr_arr = mode_corr.to_ndarray()?;
-                corr_matrices
-                    .slice_mut(ndarray::s![mode_idx, .., ..])
-                    .assign(&corr_arr);
 
                 // Compute Fisher Z-transform
-                let mode_z = match mode_corr.into_fisher_z() {
+                let block_z_matrix_wb = match block_corr_matrix_wb.clone().into_fisher_z() {
                     Ok(m) => m,
                     Err(e) => {
+                        error_count += 1;
                         warn!(
-                            subject = subject,
-                            mode_idx = mode_idx,
+                            subject = subject_id,
+                            subject_idx = subject_idx,
+                            total_subjects = total_hammer_subjects,
+                            task_name = task_name,
                             error = %e,
-                            "failed to compute Fisher Z-transform for mode, filling with NaN"
+                            reason = "fisher_transform_failed",
+                            "skipping subject due to error"
                         );
-                        for i in 0..num_rois {
-                            for j in 0..num_rois {
-                                z_matrices[[mode_idx, i, j]] = f64::NAN;
-                            }
-                        }
                         continue;
                     }
                 };
 
-                // Extract z-values into the 3D array
-                let z_arr = mode_z.to_ndarray()?;
-                z_matrices
-                    .slice_mut(ndarray::s![mode_idx, .., ..])
-                    .assign(&z_arr);
+                // Extract connectivity data into arrays for HDF5
+                let block_fc_wb_corr_matrix = block_corr_matrix_wb.to_ndarray()?;
+                let block_fc_wb_z_matrix = block_z_matrix_wb.to_ndarray()?;
+
+                // Write block connectivity to {subject_id}/{block_name} subgroup
+                let block_name = block_group.name();
+                let block_leaf = block_name.rsplit('/').next().unwrap_or(block_name.as_str());
+                let block_fc_subgroup =
+                    hdf5_io::open_or_create_group(&subject_fc_group, block_leaf, cfg.force)?;
+
+                let block_num_rois = block_fc_wb_corr_matrix.shape()[0];
+                write_dataset(
+                    &block_fc_subgroup,
+                    "corr_matrix",
+                    block_fc_wb_corr_matrix.as_slice().unwrap(),
+                    &[block_num_rois, block_num_rois],
+                    None,
+                )?;
+                write_dataset(
+                    &block_fc_subgroup,
+                    "z_matrix",
+                    block_fc_wb_z_matrix.as_slice().unwrap(),
+                    &[block_num_rois, block_num_rois],
+                    None,
+                )?;
+
+                let fc_wb_block_duration_ms = fc_wb_block_start.elapsed().as_millis();
+
+                debug!(
+                    subject = subject_id,
+                    task_name = task_name,
+                    n_rois = n_rois,
+                    block_name = block_group.name(),
+                    fc_block_duration_ms = fc_wb_block_duration_ms,
+                    output_file = fc_output_file,
+                    "computed block-wise whole-signal connectivity"
+                );
             }
-            let mode_fc_duration_ms = mode_fc_start.elapsed().as_millis();
 
-            // Write mode connectivity to HDF5
-            let mode_fc_output_file = format!("{}__mode_connectivity.h5", task_name);
-            let mode_connectivity_data = ModeConnectivityData {
-                corr_matrices,
-                z_matrices,
-                center_frequencies,
-                labels,
-            };
-            append_mode_connectivity_h5(
-                &output_dir.join(&mode_fc_output_file),
-                subject,
-                &mode_connectivity_data,
-                cfg.force,
-            )?;
+            // // Compute connectivity matrices for each MVMD mode
+            // let mode_fc_start = Instant::now();
+            // let mode_data = signal_decomposition.to_mode_dataframes()?;
+            // let num_modes = mode_data.len();
+            // let labels: Vec<String> = signal_decomposition.channels.clone();
+            // let num_rois = labels.len();
 
-            debug!(
-                subject = subject,
-                task_name = task_name,
-                num_modes = num_modes,
-                mode_fc_duration_ms = mode_fc_duration_ms,
-                output_file = mode_fc_output_file,
-                "computed mode connectivity matrices"
-            );
+            // let mut corr_matrices = Array3::<f64>::zeros((num_modes, num_rois, num_rois));
+            // let mut z_matrices = Array3::<f64>::zeros((num_modes, num_rois, num_rois));
+            // let mut center_frequencies = Vec::with_capacity(num_modes);
+
+            // for mode in mode_data {
+            //     let mode_idx = mode.mode_index;
+            //     center_frequencies.push(mode.center_frequency);
+
+            //     let mode_corr = match ConnectivityMatrix::new(mode.timeseries) {
+            //         Ok(m) => m,
+            //         Err(e) => {
+            //             warn!(
+            //                 subject = subject_id,
+            //                 mode_idx = mode_idx,
+            //                 error = %e,
+            //                 "failed to compute mode correlation matrix, filling with NaN"
+            //             );
+            //             // Fill this mode with NaN and continue
+            //             for i in 0..num_rois {
+            //                 for j in 0..num_rois {
+            //                     corr_matrices[[mode_idx, i, j]] = f64::NAN;
+            //                     z_matrices[[mode_idx, i, j]] = f64::NAN;
+            //                 }
+            //             }
+            //             continue;
+            //         }
+            //     };
+
+            //     // Extract correlation values into the 3D array
+            //     let corr_arr = mode_corr.to_ndarray()?;
+            //     corr_matrices
+            //         .slice_mut(ndarray::s![mode_idx, .., ..])
+            //         .assign(&corr_arr);
+
+            //     // Compute Fisher Z-transform
+            //     let mode_z = match mode_corr.into_fisher_z() {
+            //         Ok(m) => m,
+            //         Err(e) => {
+            //             warn!(
+            //                 subject = subject_id,
+            //                 mode_idx = mode_idx,
+            //                 error = %e,
+            //                 "failed to compute Fisher Z-transform for mode, filling with NaN"
+            //             );
+            //             for i in 0..num_rois {
+            //                 for j in 0..num_rois {
+            //                     z_matrices[[mode_idx, i, j]] = f64::NAN;
+            //                 }
+            //             }
+            //             continue;
+            //         }
+            //     };
+
+            //     // Extract z-values into the 3D array
+            //     let z_arr = mode_z.to_ndarray()?;
+            //     z_matrices
+            //         .slice_mut(ndarray::s![mode_idx, .., ..])
+            //         .assign(&z_arr);
+            // }
+            // let mode_fc_duration_ms = mode_fc_start.elapsed().as_millis();
+
+            // // Write mode connectivity to HDF5
+            // let mode_fc_output_file = format!("{}_mode_connectivity.h5", task_name);
+            // {
+            //     let mode_file = hdf5_io::open_or_create(&output_dir.join(&mode_fc_output_file))?;
+            //     let mode_group = hdf5_io::open_or_create_group(&mode_file, subject_id, cfg.force)?;
+
+            //     write_dataset(
+            //         &mode_group,
+            //         "corr_matrices",
+            //         corr_matrices.as_slice().unwrap(),
+            //         &[num_modes, num_rois, num_rois],
+            //         None,
+            //     )?;
+            //     write_dataset(
+            //         &mode_group,
+            //         "z_matrices",
+            //         z_matrices.as_slice().unwrap(),
+            //         &[num_modes, num_rois, num_rois],
+            //         None,
+            //     )?;
+            //     write_dataset(
+            //         &mode_group,
+            //         "center_frequencies",
+            //         &center_frequencies,
+            //         &[num_modes],
+            //         None,
+            //     )?;
+            //     write_attrs(&mode_group, &[H5Attr::u32("num_modes", num_modes as u32)])?;
+
+            //     let mode_root = mode_file.group("/")?;
+            //     if mode_root.attr("labels").is_err() {
+            //         write_attrs(
+            //             &mode_root,
+            //             &[
+            //                 H5Attr::string("labels", labels.join(",")),
+            //                 H5Attr::u32("num_rois", num_rois as u32),
+            //             ],
+            //         )?;
+            //     }
+            // }
+
+            // debug!(
+            //     subject = subject_id,
+            //     task_name = task_name,
+            //     num_modes = num_modes,
+            //     mode_fc_duration_ms = mode_fc_duration_ms,
+            //     output_file = mode_fc_output_file,
+            //     "computed mode connectivity matrices"
+            // );
 
             let total_duration_ms = file_start.elapsed().as_millis();
             processed_count += 1;
 
             // Wide event: one comprehensive log per subject file processed
             info!(
-                subject = subject,
+                subject = subject_id,
                 subject_idx = subject_idx,
-                total_subjects = total_subjects,
+                total_subjects = total_hammer_subjects,
                 task_name = task_name,
-                input_file = %filepath.display(),
+                input_file = %file_path.display(),
                 cortical_rois = cortical_shape[0],
                 subcortical_rois = subcortical_shape[0],
                 n_rois = n_rois,
                 n_timepoints = n_timepoints,
-                num_modes = num_modes,
-                mvmd_iterations = signal_decomposition.num_iterations,
+                // num_modes = num_modes,
+                // mvmd_iterations = signal_decomposition.num_iterations,
                 load_duration_ms = load_duration_ms,
-                fc_duration_ms = fc_duration_ms,
-                mvmd_duration_ms = mvmd_duration_ms,
-                mode_fc_duration_ms = mode_fc_duration_ms,
+                fc_duration_ms = fc_wb_duration_ms,
+                // mvmd_duration_ms = mvmd_duration_ms,
+                // mode_fc_duration_ms = mode_fc_duration_ms,
                 total_duration_ms = total_duration_ms,
                 outcome = "success",
                 "subject processed"
@@ -445,7 +599,7 @@ pub fn run(cfg: &TCPfMRIProcessConfig) -> Result<()> {
     // Final summary wide event
     info!(
         total_subjects_available = total_subjects_available,
-        total_subjects = total_subjects,
+        total_subjects = total_hammer_subjects,
         processed_count = processed_count,
         skipped_count = skipped_count,
         error_count = error_count,
@@ -459,9 +613,7 @@ pub fn run(cfg: &TCPfMRIProcessConfig) -> Result<()> {
 }
 
 fn get_directory_subject_directories(target_path: &PathBuf) -> Vec<String> {
-    let prefix = "NDAR_INV";
-
-    let dir_names: Vec<String> = fs::read_dir(target_path)
+    fs::read_dir(target_path)
         .into_iter()
         .flatten()
         .filter_map(|entry_result| entry_result.ok())
@@ -469,16 +621,14 @@ fn get_directory_subject_directories(target_path: &PathBuf) -> Vec<String> {
             let path = entry.path();
             if path.is_dir() {
                 if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-                    if name.starts_with(prefix) {
+                    if name.starts_with("sub-") {
                         return Some(name.to_owned());
                     }
                 }
             }
             None
         })
-        .collect();
-
-    dir_names
+        .collect()
 }
 
 fn read_subjects_file(filename: &PathBuf) -> Vec<String> {
@@ -500,7 +650,8 @@ fn filter_valid_subjects(
             let available_set: HashSet<_> = subjects_available.iter().collect();
             targets
                 .into_iter()
-                .filter(|subject| available_set.contains(subject))
+                .map(|t| BidsSubjectId::parse(&t).to_dir_name())
+                .filter(|dir_name| available_set.contains(dir_name))
                 .collect()
         }
         None => subjects_available,
@@ -517,6 +668,25 @@ fn filter_subjects_with_files(
         .filter(|subject| {
             let subject_dir = fmri_dir.join(subject);
             !find_bids_files(&subject_dir, required_pairs, Some("bold"), Some(".h5")).is_empty()
+        })
+        .collect()
+}
+
+fn map_subjects_with_files(
+    fmri_dir: &PathBuf,
+    subjects: Vec<String>,
+    required_pairs: &[(&str, &str)],
+) -> BTreeMap<String, Vec<PathBuf>> {
+    subjects
+        .into_iter()
+        .filter_map(|subject| {
+            let fmri_subject_dir = fmri_dir.join(&subject);
+            let task_files =
+                find_bids_files(&fmri_subject_dir, required_pairs, Some("bold"), Some(".h5"));
+            if task_files.is_empty() {
+                return None;
+            }
+            Some((subject, task_files))
         })
         .collect()
 }
@@ -602,26 +772,7 @@ fn create_dual_atlas_dataframe(
     DataFrame::new(columns)
 }
 
-/// Whole-signal connectivity results for HDF5 output
-struct ConnectivityData {
-    /// Correlation matrix: (N_ROIs x N_ROIs)
-    corr_matrix: Array2<f64>,
-    /// Fisher Z-transformed matrix: (N_ROIs x N_ROIs)
-    z_matrix: Array2<f64>,
-    /// ROI labels
-    labels: Vec<String>,
-}
-
-/// Opens or creates an HDF5 file for appending subject data
-fn open_or_create_h5(path: &Path) -> Result<hdf5::File> {
-    if path.exists() {
-        Ok(hdf5::File::open_rw(path)?)
-    } else {
-        Ok(hdf5::File::create(path)?)
-    }
-}
-
-/// Checks if a subject group already exists in an HDF5 file
+/// Checks if a subject group already exists in an HDF5 file.
 fn subject_exists_in_h5(path: &Path, subject: &str) -> bool {
     if !path.exists() {
         return false;
@@ -631,246 +782,4 @@ fn subject_exists_in_h5(path: &Path, subject: &str) -> bool {
     } else {
         false
     }
-}
-
-/// Creates a subject group, optionally replacing an existing one if force is true.
-fn create_subject_group(file: &hdf5::File, name: &str, force: bool) -> Result<hdf5::Group> {
-    if force && file.group(name).is_ok() {
-        file.unlink(name)?;
-    }
-    Ok(file.create_group(name)?)
-}
-
-/// Appends connectivity data for a subject.
-fn append_connectivity_h5(
-    path: &Path,
-    subject: &str,
-    data: &ConnectivityData,
-    force: bool,
-) -> Result<()> {
-    let file = open_or_create_h5(path)?;
-
-    let num_rois = data.corr_matrix.shape()[0];
-
-    // Create subject group (replace if force=true)
-    let group = create_subject_group(&file, subject, force)?;
-
-    // Write correlation matrix: (N_ROIs x N_ROIs)
-    let corr_ds = group
-        .new_dataset::<f64>()
-        .shape([num_rois, num_rois])
-        .create("corr_matrix")?;
-    corr_ds.write_raw(data.corr_matrix.as_slice().unwrap())?;
-
-    // Write z-matrix: (N_ROIs x N_ROIs)
-    let z_ds = group
-        .new_dataset::<f64>()
-        .shape([num_rois, num_rois])
-        .create("z_matrix")?;
-    z_ds.write_raw(data.z_matrix.as_slice().unwrap())?;
-
-    // Write shared metadata to root if not already present
-    let root = file.group("/")?;
-    if root.attr("labels").is_err() {
-        // ROI labels as comma-separated string (shared across all subjects)
-        let labels_str = data.labels.join(",");
-        let labels_unicode: hdf5::types::VarLenUnicode = labels_str.parse().unwrap();
-        root.new_attr::<hdf5::types::VarLenUnicode>()
-            .shape([1])
-            .create("labels")?
-            .write_raw(&[labels_unicode])?;
-
-        // Number of ROIs (shared across all subjects)
-        root.new_attr::<u32>()
-            .shape([1])
-            .create("num_rois")?
-            .write_raw(&[num_rois as u32])?;
-    }
-
-    Ok(())
-}
-
-/// Mode connectivity results for HDF5 output
-struct ModeConnectivityData {
-    /// Correlation matrices for each mode: (K modes x N_ROIs x N_ROIs)
-    corr_matrices: Array3<f64>,
-    /// Fisher Z-transformed matrices for each mode: (K modes x N_ROIs x N_ROIs)
-    z_matrices: Array3<f64>,
-    /// Center frequency for each mode: (K,)
-    center_frequencies: Vec<f64>,
-    /// ROI/channel labels
-    labels: Vec<String>,
-}
-
-/// Appends mode connectivity data for a subject.
-fn append_mode_connectivity_h5(
-    path: &Path,
-    subject: &str,
-    data: &ModeConnectivityData,
-    force: bool,
-) -> Result<()> {
-    let file = open_or_create_h5(path)?;
-
-    let num_modes = data.corr_matrices.shape()[0];
-    let num_rois = data.corr_matrices.shape()[1];
-
-    // Create subject group (replace if force=true)
-    let group = create_subject_group(&file, subject, force)?;
-
-    // Write correlation matrices: (K x N_ROIs x N_ROIs)
-    let corr_ds = group
-        .new_dataset::<f64>()
-        .shape([num_modes, num_rois, num_rois])
-        .create("corr_matrices")?;
-    corr_ds.write_raw(data.corr_matrices.as_slice().unwrap())?;
-
-    // Write z-matrices: (K x N_ROIs x N_ROIs)
-    let z_ds = group
-        .new_dataset::<f64>()
-        .shape([num_modes, num_rois, num_rois])
-        .create("z_matrices")?;
-    z_ds.write_raw(data.z_matrices.as_slice().unwrap())?;
-
-    // Write center frequencies as dataset: (K,)
-    let cf_ds = group
-        .new_dataset::<f64>()
-        .shape([num_modes])
-        .create("center_frequencies")?;
-    cf_ds.write_raw(&data.center_frequencies)?;
-
-    // Write per-subject metadata as attributes on subject group
-    group
-        .new_attr::<u32>()
-        .shape([1])
-        .create("num_modes")?
-        .write_raw(&[num_modes as u32])?;
-
-    // Write shared metadata to root if not already present
-    let root = file.group("/")?;
-    if root.attr("labels").is_err() {
-        // ROI labels as comma-separated string (shared across all subjects)
-        let labels_str = data.labels.join(",");
-        let labels_unicode: hdf5::types::VarLenUnicode = labels_str.parse().unwrap();
-        root.new_attr::<hdf5::types::VarLenUnicode>()
-            .shape([1])
-            .create("labels")?
-            .write_raw(&[labels_unicode])?;
-
-        // Number of ROIs (shared across all subjects)
-        root.new_attr::<u32>()
-            .shape([1])
-            .create("num_rois")?
-            .write_raw(&[num_rois as u32])?;
-    }
-
-    Ok(())
-}
-
-/// Appends BOLD timeseries data for a subject.
-fn append_timeseries_h5(
-    path: &Path,
-    subject: &str,
-    data: &TimeseriesData,
-    force: bool,
-) -> Result<()> {
-    let file = open_or_create_h5(path)?;
-
-    let n_timepoints = data.get_timepoint_count();
-    let n_rois = data.get_channel_count();
-
-    // Create subject group (replace if force=true)
-    let group = create_subject_group(&file, subject, force)?;
-
-    // Write timeseries: (T x N_ROIs)
-    let ts_ds = group
-        .new_dataset::<f64>()
-        .shape([n_timepoints, n_rois])
-        .create("timeseries")?;
-
-    let as_array = data.to_ndarray()?;
-
-    ts_ds.write_raw(
-        as_array
-            .as_slice()
-            .expect("failed to convert array to slice"),
-    )?;
-
-    // Write per-subject metadata
-    group
-        .new_attr::<u32>()
-        .shape([1])
-        .create("n_timepoints")?
-        .write_raw(&[n_timepoints as u32])?;
-
-    // Write shared metadata to root if not already present
-    let root = file.group("/")?;
-    if root.attr("labels").is_err() {
-        // ROI labels as comma-separated string (shared across all subjects)
-        let labels_str = data.labels.join(",");
-        let labels_unicode: hdf5::types::VarLenUnicode = labels_str.parse().unwrap();
-        root.new_attr::<hdf5::types::VarLenUnicode>()
-            .shape([1])
-            .create("labels")?
-            .write_raw(&[labels_unicode])?;
-
-        // Number of ROIs (shared across all subjects)
-        root.new_attr::<u32>()
-            .shape([1])
-            .create("num_rois")?
-            .write_raw(&[n_rois as u32])?;
-    }
-
-    Ok(())
-}
-
-/// Appends MVMD results for a subject.
-fn append_mvmd_results_h5(path: &Path, subject: &str, res: &MVMDResult, force: bool) -> Result<()> {
-    let file = open_or_create_h5(path)?;
-
-    // Create subject group (replace if force=true)
-    let group = create_subject_group(&file, subject, force)?;
-
-    // Write modes dataset: (K modes x C channels x T time-points)
-    let modes_shape = res.modes.shape();
-    let modes_ds = group
-        .new_dataset::<f64>()
-        .shape([modes_shape[0], modes_shape[1], modes_shape[2]])
-        .create("modes")?;
-    modes_ds.write_raw(res.modes.as_slice().unwrap())?;
-
-    // Write center_frequencies dataset: (iter x K)
-    let cf_shape = res.center_frequencies.shape();
-    let cf_ds = group
-        .new_dataset::<f64>()
-        .shape([cf_shape[0], cf_shape[1]])
-        .create("center_frequencies")?;
-    cf_ds.write_raw(res.center_frequencies.as_slice().unwrap())?;
-
-    // Write final_frequencies dataset: (K,)
-    let ff_ds = group
-        .new_dataset::<f64>()
-        .shape([res.final_frequencies.len()])
-        .create("final_frequencies")?;
-    ff_ds.write_raw(res.final_frequencies.as_slice().unwrap())?;
-
-    // Write num_iterations as attribute on subject group
-    group
-        .new_attr::<u32>()
-        .shape([1])
-        .create("num_iterations")?
-        .write_raw(&[res.num_iterations])?;
-
-    // Write shared metadata to root if not already present
-    let root = file.group("/")?;
-    if root.attr("channels").is_err() {
-        // Channel/ROI labels as comma-separated string (shared across all subjects)
-        let channels_str = res.channels.join(",");
-        let channels_unicode: hdf5::types::VarLenUnicode = channels_str.parse().unwrap();
-        root.new_attr::<hdf5::types::VarLenUnicode>()
-            .shape([1])
-            .create("channels")?
-            .write_raw(&[channels_unicode])?;
-    }
-
-    Ok(())
 }
