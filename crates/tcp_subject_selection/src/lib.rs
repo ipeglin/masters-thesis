@@ -1,7 +1,8 @@
 use anyhow::Result;
+use config::TcpSubjectSelectionConfig;
 use config::annex;
+use config::bids_subject_id::BidsSubjectId;
 use config::polars_csv;
-use config::TCPSubjectSelectionConfig;
 use git2::Repository;
 use polars::prelude::*;
 use std::fs;
@@ -19,7 +20,23 @@ pub enum TCPPreprocessError {
     RequiredFileMissing(String),
 }
 
-pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
+fn write_sorted<P: AsRef<std::path::Path>>(path: P, df: &DataFrame) -> Result<()> {
+    let sorted = df
+        .clone()
+        .lazy()
+        .sort(
+            ["subjectkey"],
+            SortMultipleOptions {
+                descending: vec![false],
+                ..Default::default()
+            },
+        )
+        .collect()?;
+    polars_csv::write_dataframe(path, &sorted)?;
+    Ok(())
+}
+
+pub fn run(cfg: &TcpSubjectSelectionConfig) -> Result<()> {
     info!("{:?}", cfg);
 
     ////////////////////////
@@ -76,7 +93,7 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
     // Apply Demos Filters //
     /////////////////////////
 
-    let filter_output_dir = cfg.output_dir.join("filters");
+    let filter_output_dir = &cfg.output_dir;
     fs::create_dir_all(&filter_output_dir)?;
 
     // Check demos file is available
@@ -114,7 +131,7 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    polars_csv::write_dataframe(filter_output_dir.join("demos.csv"), &demos_df)?;
+    write_sorted(filter_output_dir.join("demos.csv"), &demos_df)?;
 
     // General population
     let genpop_df = LazyCsvReader::new(PlPath::from_str(demos_path))
@@ -129,7 +146,7 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    polars_csv::write_dataframe(filter_output_dir.join("genpop.csv"), &genpop_df)?;
+    write_sorted(filter_output_dir.join("genpop.csv"), &genpop_df)?;
 
     // Major Depressive Disorder (Primary Diagnosis)
     let primary_mdd_df = LazyCsvReader::new(PlPath::from_str(demos_path))
@@ -144,7 +161,7 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    polars_csv::write_dataframe(filter_output_dir.join("primary_mdd.csv"), &primary_mdd_df)?;
+    write_sorted(filter_output_dir.join("primary_mdd.csv"), &primary_mdd_df)?;
 
     // Major Depressive Disorder (Primary Diagnosis)
     let secondary_mdd_df = LazyCsvReader::new(PlPath::from_str(demos_path))
@@ -159,7 +176,7 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    polars_csv::write_dataframe(
+    write_sorted(
         filter_output_dir.join("secondary_mdd.csv"),
         &secondary_mdd_df,
     )?;
@@ -226,7 +243,7 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    polars_csv::write_dataframe(filter_output_dir.join("shaps.csv"), &shaps_df)?;
+    write_sorted(filter_output_dir.join("shaps.csv"), &shaps_df)?;
 
     // Non-anhedonic: computed scores are 0–2
     let non_anhedonic_df = shaps_valid_df
@@ -236,23 +253,26 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    polars_csv::write_dataframe(
+    write_sorted(
         filter_output_dir.join("shaps_non_anhedonic.csv"),
         &non_anhedonic_df,
     )?;
 
     // Anhedonic subjects: computed scores are 3–14
-    let anhedonic_df = shaps_valid_df
+    let shaps_anhedonic_df = shaps_valid_df
         .clone()
         .lazy()
         .filter(col("shaps_computed_total").gt_eq(lit(3)))
         .select([col("subjectkey")])
         .collect()?;
 
-    polars_csv::write_dataframe(filter_output_dir.join("shaps_anhedonic.csv"), &anhedonic_df)?;
+    write_sorted(
+        filter_output_dir.join("shaps_anhedonic.csv"),
+        &shaps_anhedonic_df,
+    )?;
 
     // Low-anhedonic subjects: computed scores are 3–14
-    let low_anhedonic_df = shaps_valid_df
+    let shaps_low_anhedonic_df = shaps_valid_df
         .clone()
         .lazy()
         .filter(
@@ -263,26 +283,26 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    polars_csv::write_dataframe(
+    write_sorted(
         filter_output_dir.join("shaps_low_anhedonic.csv"),
-        &low_anhedonic_df,
+        &shaps_low_anhedonic_df,
     )?;
 
     // High-anhedonic subjects: computed scores are 3–14
-    let high_anhedonic_df = shaps_valid_df
+    let shaps_high_anhedonic_df = shaps_valid_df
         .lazy()
         .filter(col("shaps_computed_total").gt_eq(lit(9)))
         .select([col("subjectkey")])
         .collect()?;
 
-    polars_csv::write_dataframe(
+    write_sorted(
         filter_output_dir.join("shaps_high_anhedonic.csv"),
-        &high_anhedonic_df,
+        &shaps_high_anhedonic_df,
     )?;
 
-    /////////////////////////
+    ////////////////////////
     // Apply TEPS Filters //
-    /////////////////////////
+    ////////////////////////
 
     // Check teps file is available
     let teps_path = dataset_dir.join("phenotype").join("teps01.tsv");
@@ -338,7 +358,7 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
         .lazy()
         .select([col("subjectkey")])
         .collect()?;
-    polars_csv::write_dataframe(filter_output_dir.join("teps.csv"), &teps_df)?;
+    write_sorted(filter_output_dir.join("teps.csv"), &teps_df)?;
 
     // Compute per-participant mean for anticipatory and consummatory scores.
     // Manually compute mean: sum valid scores and divide by count of non-null values
@@ -420,7 +440,7 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    polars_csv::write_dataframe(
+    write_sorted(
         filter_output_dir.join("teps_anticipatory_anhedonic.csv"),
         &teps_anticipatory_anhedonic_df,
     )?;
@@ -433,7 +453,7 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    polars_csv::write_dataframe(
+    write_sorted(
         filter_output_dir.join("teps_anticipatory_non_anhedonic.csv"),
         &teps_anticipatory_non_anhedonic_df,
     )?;
@@ -446,7 +466,7 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    polars_csv::write_dataframe(
+    write_sorted(
         filter_output_dir.join("teps_consummatory_anhedonic.csv"),
         &teps_consummatory_anhedonic_df,
     )?;
@@ -458,9 +478,81 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    polars_csv::write_dataframe(
+    write_sorted(
         filter_output_dir.join("teps_consummatory_non_anhedonic.csv"),
         &teps_consummatory_non_anhedonic_df,
+    )?;
+
+    //////////////////////////////
+    // Raw Data Availability    //
+    //////////////////////////////
+
+    // Scan the BIDS dataset root for subjects with anat/ and func/ directories.
+    // BIDS subject folders are named sub-<id>. The demos.tsv subjectkey format for NDAR IDs
+    // is NDAR_INVXXXXXXXX, which maps to sub-NDARINVXXXXXXXX in BIDS (underscore dropped).
+    let mut subjects_with_bids_data: Vec<String> = Vec::new();
+    let mut subjects_with_hammer_task: Vec<String> = Vec::new();
+
+    if let Ok(entries) = fs::read_dir(dataset_dir) {
+        for entry in entries.flatten() {
+            let dir_name = entry.file_name();
+            let dir_name_str = dir_name.to_string_lossy();
+
+            if !dir_name_str.starts_with("sub-") {
+                continue;
+            }
+
+            let subjectkey = BidsSubjectId::parse(&*dir_name_str).to_subjectkey();
+
+            let subject_path = entry.path();
+            let anat_path = subject_path.join("anat");
+            let func_path = subject_path.join("func");
+
+            if anat_path.is_dir() && func_path.is_dir() {
+                subjects_with_bids_data.push(subjectkey.clone());
+
+                let has_hammer = fs::read_dir(&func_path)
+                    .map(|dir_entries| {
+                        dir_entries
+                            .flatten()
+                            .any(|e| e.file_name().to_string_lossy().contains("task-hammerAP"))
+                    })
+                    .unwrap_or(false);
+
+                if has_hammer {
+                    subjects_with_hammer_task.push(subjectkey);
+                }
+            }
+        }
+    }
+
+    info!(
+        "Subjects with BIDS data (anat+func): {}",
+        subjects_with_bids_data.len()
+    );
+    info!(
+        "Subjects with BIDS data + task-hammerAP: {}",
+        subjects_with_hammer_task.len()
+    );
+
+    let subjects_with_bids_data_df = DataFrame::new(vec![Column::new(
+        "subjectkey".into(),
+        subjects_with_bids_data,
+    )])?;
+
+    let subjects_with_hammer_task_df = DataFrame::new(vec![Column::new(
+        "subjectkey".into(),
+        subjects_with_hammer_task,
+    )])?;
+
+    write_sorted(
+        filter_output_dir.join("subjects_with_bids_data.csv"),
+        &subjects_with_bids_data_df,
+    )?;
+
+    write_sorted(
+        filter_output_dir.join("subjects_with_hammer_task.csv"),
+        &subjects_with_hammer_task_df,
     )?;
 
     /////////////////////
@@ -491,7 +583,20 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
             None,
         )?;
 
-    polars_csv::write_dataframe(
+    write_sorted(
+        filter_output_dir.join("healthy_controls_without_raw_data.csv"),
+        &healthy_controls_df,
+    )?;
+
+    let healthy_controls_df = healthy_controls_df.join(
+        &subjects_with_hammer_task_df,
+        ["subjectkey"],
+        ["subjectkey"],
+        JoinArgs::new(JoinType::Inner),
+        None,
+    )?;
+
+    write_sorted(
         filter_output_dir.join("healthy_controls.csv"),
         &healthy_controls_df,
     )?;
@@ -510,7 +615,48 @@ pub fn run(cfg: &TCPSubjectSelectionConfig) -> Result<()> {
         .drop(cols(["subjectkey_right"]))
         .collect()?;
 
-    polars_csv::write_dataframe(filter_output_dir.join("mdd.csv"), &mdd_df)?;
+    write_sorted(filter_output_dir.join("mdd.csv"), &mdd_df)?;
+
+    // All anhedonic subjects: union of SHAPS anhedonic, TEPS-ANT anhedonic, TEPS-CON anhedonic
+    let anhedonic_df = shaps_anhedonic_df
+        .join(
+            &teps_anticipatory_anhedonic_df,
+            ["subjectkey"],
+            ["subjectkey"],
+            JoinArgs::new(JoinType::Full),
+            None,
+        )?
+        .lazy()
+        .with_column(coalesce(&[col("subjectkey"), col("subjectkey_right")]).alias("subjectkey"))
+        .drop(cols(["subjectkey_right"]))
+        .collect()?
+        .join(
+            &teps_consummatory_anhedonic_df,
+            ["subjectkey"],
+            ["subjectkey"],
+            JoinArgs::new(JoinType::Full),
+            None,
+        )?
+        .lazy()
+        .with_column(coalesce(&[col("subjectkey"), col("subjectkey_right")]).alias("subjectkey"))
+        .drop(cols(["subjectkey_right"]))
+        .unique(Some(cols(["subjectkey"])), UniqueKeepStrategy::Any)
+        .collect()?;
+
+    write_sorted(
+        filter_output_dir.join("anhedonic_without_raw_data.csv"),
+        &anhedonic_df,
+    )?;
+
+    let anhedonic_df = anhedonic_df.join(
+        &subjects_with_hammer_task_df,
+        ["subjectkey"],
+        ["subjectkey"],
+        JoinArgs::new(JoinType::Inner),
+        None,
+    )?;
+
+    write_sorted(filter_output_dir.join("anhedonic.csv"), &anhedonic_df)?;
 
     Ok(())
 }
