@@ -1,14 +1,33 @@
 use anyhow::Result;
 use config::bids_filename::{BidsFilename, find_bids_files};
-use config::{TCPfMRIPreprocessConfig, polars_csv};
-use ndarray::{Array2, s};
+use config::bids_subject_id::BidsSubjectId;
+use config::{TcpFmriParcellationConfig, polars_csv};
+use ndarray::{Array2, Axis, concatenate, s};
 use nifti_masker::{LabelsMasker, MaskerSignalConfig, Standardize, preprocess_signals};
 use polars::prelude::*;
-use std::path::Path;
+use std::fs;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
-use tracing::{debug, info, info_span, warn};
+use tracing::{debug, error, info, info_span, warn};
 
-pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
+pub fn run(cfg: &TcpFmriParcellationConfig) -> Result<()> {
+    // Check that the fmri dir is even present.
+    // If not, fail gracefully and inform the user that the
+    // disk might not be connected, or the network disk is not opened.
+    let fmri_dir = &cfg.fmri_dir;
+    match fs::read_dir(fmri_dir) {
+        Ok(_) => { /* Process entries */ }
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            error!(
+                fmri_dir = %fmri_dir.display(),
+                "Directory not found: {}. Make sure to have the disk connected, or connecting to the network drive", fmri_dir.display()
+            );
+            return Ok(());
+        }
+        Err(e) => panic!("Failed to read directory: {}", e),
+    }
+
     let run_start = Instant::now();
 
     info!(
@@ -26,12 +45,7 @@ pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
     let filter_dir = &cfg.filter_dir;
     let filtered_subjects = [
         filter_dir.join("healthy_controls.csv"),
-        filter_dir.join("shaps_low_anhedonic.csv"),
-        filter_dir.join("shaps_high_anhedonic.csv"),
-        filter_dir.join("teps_anticipatory_anhedonic.csv"),
-        filter_dir.join("teps_anticipatory_non_anhedonic.csv"),
-        filter_dir.join("teps_anticipatory_anhedonic.csv"),
-        filter_dir.join("teps_anticipatory_non_anhedonic.csv"),
+        filter_dir.join("anhedonic.csv"),
     ];
 
     let dataframes: Vec<LazyFrame> = filtered_subjects
@@ -76,8 +90,8 @@ pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
 
     for (i, subject_key) in subject_keys.into_iter().flatten().enumerate() {
         let subject_idx = i + 1;
-        let dir_name = parse_subject_directory_name(subject_key);
-        let subject_dir = cfg.fmri_dir.join(&dir_name);
+        let dir_name = BidsSubjectId::parse(subject_key).to_dir_name();
+        let subject_dir = fmri_dir.join(&dir_name);
 
         // Create a span for the entire subject processing - this is the "wide event"
         let _subject_span = info_span!(
@@ -103,9 +117,11 @@ pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
         }
 
         let mni_results_dir = subject_dir.join("func");
-        let files_to_preprocess = find_bids_files(
+
+        let hammer_scan_files = find_bids_files(
             &mni_results_dir,
             &[
+                ("task", "hammerAP"),
                 ("space", "MNI152NLin2009cAsym"),
                 ("res", "2"),
                 ("desc", "preproc"),
@@ -113,6 +129,21 @@ pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
             Some("bold"),
             Some(".nii.gz"),
         );
+        let resting_scan_files = find_bids_files(
+            &mni_results_dir,
+            &[
+                ("task", "restAP"),
+                ("space", "MNI152NLin2009cAsym"),
+                ("res", "2"),
+                ("desc", "preproc"),
+            ],
+            Some("bold"),
+            Some(".nii.gz"),
+        );
+        let files_to_preprocess: Vec<PathBuf> = hammer_scan_files
+            .into_iter()
+            .chain(resting_scan_files.into_iter())
+            .collect();
 
         for file_path in files_to_preprocess {
             if !file_path.exists() {
@@ -128,16 +159,17 @@ pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
                 continue;
             }
 
-            let task_name =
-                BidsFilename::parse(file_path.file_name().and_then(|n| n.to_str()).unwrap_or(""))
-                    .without(&["sub"])
-                    .to_stem();
+            let bids_filename = BidsFilename::parse(
+                file_path.file_name().and_then(|n| n.to_str()).unwrap_or(""),
+            );
+            let task_name = bids_filename.get("task").unwrap_or("unknown");
+            let output_stem = bids_filename.to_stem();
 
             // Check if output already exists (skip unless --force)
             let output_path = cfg
                 .output_dir
-                .join(subject_key)
-                .join(format!("{}.h5", task_name));
+                .join(BidsSubjectId::parse(subject_key).to_dir_name())
+                .join(format!("{}.h5", output_stem));
             if output_path.exists() && !cfg.force {
                 skipped_count += 1;
                 info!(
@@ -207,21 +239,21 @@ pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
             // Variant 3: detrend=false, standardize=ZscoreSample
             // Variant 4: detrend=true,  standardize=ZscoreSample  (nilearn default)
 
-            let detrended_config = MaskerSignalConfig::default().detrend(true);
-            let standardized_config =
-                MaskerSignalConfig::default().standardize(Standardize::ZscoreSample);
-            let detrended_standardized_config = MaskerSignalConfig::with_defaults();
+            // let detrended_config = MaskerSignalConfig::default().detrend(true);
+            // let standardized_config =
+            //     MaskerSignalConfig::default().standardize(Standardize::ZscoreSample);
+            // let detrended_standardized_config = MaskerSignalConfig::with_defaults();
 
-            let cortical_detrended = preprocess_signals(&cortical_raw, &detrended_config);
-            let cortical_standardized = preprocess_signals(&cortical_raw, &standardized_config);
-            let cortical_detrended_standardized =
-                preprocess_signals(&cortical_raw, &detrended_standardized_config);
+            // let cortical_detrended = preprocess_signals(&cortical_raw, &detrended_config);
+            // let cortical_standardized = preprocess_signals(&cortical_raw, &standardized_config);
+            // let cortical_detrended_standardized =
+            //     preprocess_signals(&cortical_raw, &detrended_standardized_config);
 
-            let subcortical_detrended = preprocess_signals(&subcortical_raw, &detrended_config);
-            let subcortical_standardized =
-                preprocess_signals(&subcortical_raw, &standardized_config);
-            let subcortical_detrended_standardized =
-                preprocess_signals(&subcortical_raw, &detrended_standardized_config);
+            // let subcortical_detrended = preprocess_signals(&subcortical_raw, &detrended_config);
+            // let subcortical_standardized =
+            //     preprocess_signals(&subcortical_raw, &standardized_config);
+            // let subcortical_detrended_standardized =
+            //     preprocess_signals(&subcortical_raw, &detrended_standardized_config);
 
             // Debug: Print first few raw values
             debug!(
@@ -236,17 +268,23 @@ pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
                 std::fs::create_dir_all(parent)?;
             }
 
+            // Remove existing file before (re)creating — HDF5 cannot acquire a lock
+            // on a file that already exists on some filesystems (errno 35).
+            if output_path.exists() {
+                fs::remove_file(&output_path)?;
+            }
+
             let write_start = Instant::now();
             write_timeseries_h5(
                 &output_path,
                 &cortical_raw,
                 &subcortical_raw,
-                &cortical_detrended,
-                &subcortical_detrended,
-                &cortical_standardized,
-                &subcortical_standardized,
-                &cortical_detrended_standardized,
-                &subcortical_detrended_standardized,
+                // &cortical_detrended,
+                // &subcortical_detrended,
+                // &cortical_standardized,
+                // &subcortical_standardized,
+                // &cortical_detrended_standardized,
+                // &subcortical_detrended_standardized,
             )?;
             let write_duration_ms = write_start.elapsed().as_millis();
 
@@ -291,10 +329,6 @@ pub fn run(cfg: &TCPfMRIPreprocessConfig) -> Result<()> {
     Ok(())
 }
 
-fn parse_subject_directory_name(key: &str) -> String {
-    format!("sub-{}", key.replace("_", ""))
-}
-
 /// Write a single 2-D cortical/subcortical pair to an open HDF5 file.
 fn write_array_pair(
     file: &hdf5::File,
@@ -332,12 +366,12 @@ fn write_timeseries_h5(
     path: &Path,
     cortical_raw: &Array2<f32>,
     subcortical_raw: &Array2<f32>,
-    cortical_detrended: &Array2<f32>,
-    subcortical_detrended: &Array2<f32>,
-    cortical_standardized: &Array2<f32>,
-    subcortical_standardized: &Array2<f32>,
-    cortical_detrended_standardized: &Array2<f32>,
-    subcortical_detrended_standardized: &Array2<f32>,
+    // cortical_detrended: &Array2<f32>,
+    // subcortical_detrended: &Array2<f32>,
+    // cortical_standardized: &Array2<f32>,
+    // subcortical_standardized: &Array2<f32>,
+    // cortical_detrended_standardized: &Array2<f32>,
+    // subcortical_detrended_standardized: &Array2<f32>,
 ) -> Result<()> {
     let file = hdf5::File::create(path)?;
 
@@ -349,29 +383,37 @@ fn write_timeseries_h5(
         "tcp_subcortical_raw",
     )?;
 
-    write_array_pair(
-        &file,
-        cortical_detrended,
-        "tcp_cortical_detrended",
-        subcortical_detrended,
-        "tcp_subcortical_detrended",
-    )?;
+    let timeseries_raw = concatenate(Axis(0), &[cortical_raw.view(), subcortical_raw.view()])?;
+    let ts_shape = timeseries_raw.shape();
+    let ts_ds = file
+        .new_dataset::<f32>()
+        .shape([ts_shape[0], ts_shape[1]])
+        .create("tcp_timeseries_raw")?;
+    ts_ds.write_raw(timeseries_raw.as_slice().unwrap())?;
 
-    write_array_pair(
-        &file,
-        cortical_standardized,
-        "tcp_cortical_standardized",
-        subcortical_standardized,
-        "tcp_subcortical_standardized",
-    )?;
+    // write_array_pair(
+    //     &file,
+    //     cortical_detrended,
+    //     "tcp_cortical_detrended",
+    //     subcortical_detrended,
+    //     "tcp_subcortical_detrended",
+    // )?;
 
-    write_array_pair(
-        &file,
-        cortical_detrended_standardized,
-        "tcp_cortical_detrended_standardized",
-        subcortical_detrended_standardized,
-        "tcp_subcortical_detrended_standardized",
-    )?;
+    // write_array_pair(
+    //     &file,
+    //     cortical_standardized,
+    //     "tcp_cortical_standardized",
+    //     subcortical_standardized,
+    //     "tcp_subcortical_standardized",
+    // )?;
+
+    // write_array_pair(
+    //     &file,
+    //     cortical_detrended_standardized,
+    //     "tcp_cortical_detrended_standardized",
+    //     subcortical_detrended_standardized,
+    //     "tcp_subcortical_detrended_standardized",
+    // )?;
 
     Ok(())
 }
