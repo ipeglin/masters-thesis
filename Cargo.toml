@@ -10,6 +10,7 @@ members = [
   "crates/tcp_fmri_parcellation",
   "crates/tcp_fmri_segment_trials",
   "crates/tcp_mvmd",
+  "crates/tcp_cwt",
   "crates/tcp_fmri_process",
   "crates/hdf5_io",
 ]
