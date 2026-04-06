@@ -43,6 +43,22 @@ fn cwt_multichannel(
     (real, imag, [n_channels, padded_len])
 }
 
+fn make_scales() -> Scales {
+    let distribution_type = ScaleTypes::LinFreq;
+    let repetition_time: f64 = 0.8; // 800 ms
+    let analog_sampling_freq: usize = (1.0 / repetition_time).floor() as usize; // really 1.25 Hz
+    let freq_range_start = 2.00;
+    let freq_range_end = (analog_sampling_freq / 2) as f64;
+    let num_wavelets = 1000;
+    Scales::create(
+        distribution_type,
+        analog_sampling_freq,
+        freq_range_start,
+        freq_range_end,
+        num_wavelets,
+    )
+}
+
 pub fn run(cfg: &CwtConfig) -> Result<()> {
     let run_start = Instant::now();
 
@@ -271,8 +287,4 @@ pub fn run(cfg: &CwtConfig) -> Result<()> {
     );
 
     Ok(())
-}
-
-fn make_scales() -> Scales {
-    Scales::create(ScaleTypes::LinFreq, 48000, 20.0, 20000.0, 1000)
 }
