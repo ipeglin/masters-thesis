@@ -1,7 +1,14 @@
 /target
 config.toml
 !*.example
+
+# macOS metadata
 .DS_Store
+**/.DS_Store
+._*
+**/*._*
+.AppleDouble
+.LSOverride
 
 # IDUN setup for modules
 setup_env.*

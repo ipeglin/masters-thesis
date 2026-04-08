@@ -77,7 +77,7 @@ pub fn run(cfg: &TcpTrialSegmentationConfig) -> Result<()> {
             .filter(|path| path.is_file())
             .filter_map(|path| {
                 let name = path.file_name()?.to_str()?;
-                if !name.ends_with(".h5") {
+                if name.starts_with('.') || !name.ends_with(".h5") {
                     return None;
                 }
                 let parsed = BidsFilename::parse(name);
