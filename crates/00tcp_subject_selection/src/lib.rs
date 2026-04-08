@@ -447,7 +447,7 @@ pub fn run(cfg: &TcpSubjectSelectionConfig) -> Result<()> {
 
     // Anticipatory non-anhedonic: scoring at or above the threshold on teps_ant_mean
     let teps_anticipatory_non_anhedonic_df = teps_scored_df
-        .clone()
+        .clone()    
         .lazy()
         .filter(col("teps_ant_mean").gt_eq(lit(ant_threshold)))
         .select([col("subjectkey")])

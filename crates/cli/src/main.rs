@@ -85,6 +85,11 @@ enum Command {
 
         #[arg(long)]
         glm_output_dir: Option<PathBuf>,
+
+        /// Force reprocessing of blocks that already exist in output files
+        #[arg(long, short = 'f')]
+        force: bool,
+
     },
     DecomposeMvmd {
         #[arg(long)]
@@ -256,6 +261,7 @@ fn main() -> Result<()> {
             tcp_dir,
             bold_ts_dir,
             glm_output_dir,
+            force,
         } => {
             let mut p = cfg.tcp_fmri_segment_trials;
 
@@ -269,6 +275,10 @@ fn main() -> Result<()> {
 
             if let Some(v) = glm_output_dir {
                 p.glm_output_dir = v
+            }
+
+            if force {
+                p.force = true
             }
 
             tcp_fmri_segment_trials::run(&p)

@@ -4,15 +4,15 @@ members = [
   "crates/cli",
   "crates/config",
   "crates/fc",
-  "crates/signals",
-  "crates/nifti_masker",
-  "crates/tcp_subject_selection",
-  "crates/tcp_fmri_parcellation",
-  "crates/tcp_fmri_segment_trials",
-  "crates/tcp_mvmd",
-  "crates/tcp_cwt",
-  "crates/tcp_fmri_process",
   "crates/hdf5_io",
+  "crates/nifti_masker",
+  "crates/signals",
+  "crates/00tcp_subject_selection",
+  "crates/01tcp_fmri_parcellation",
+  "crates/02tcp_fmri_segment_trials",
+  "crates/03tcp_mvmd",
+  "crates/04tcp_cwt",
+  "crates/tcp_fmri_process",
 ]
 
 [workspace.dependencies]

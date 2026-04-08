@@ -86,6 +86,9 @@ pub struct TcpTrialSegmentationConfig {
     pub bold_ts_dir: PathBuf,
     /// Directory where per-condition GLM onset/duration TSV files are written.
     pub glm_output_dir: PathBuf,
+    /// Force reprocessing of blocks that already exist in output files.
+    #[serde(default)]
+    pub force: bool,
 }
 
 impl Default for TcpTrialSegmentationConfig {
@@ -94,6 +97,7 @@ impl Default for TcpTrialSegmentationConfig {
             tcp_dir: PathBuf::from("/path/to/tcp"),
             bold_ts_dir: PathBuf::from("/path/to/fmri_timeseries"),
             glm_output_dir: PathBuf::from("/path/to/glm_conditions"),
+            force: false,
         }
     }
 }

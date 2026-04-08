@@ -11,9 +11,9 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 config = { path = "../config" }
-tcp_subject_selection = { path = "../tcp_subject_selection" }
-tcp_fmri_parcellation = { path = "../tcp_fmri_parcellation" }
-tcp_fmri_segment_trials = { path = "../tcp_fmri_segment_trials" }
-tcp_mvmd = { path = "../tcp_mvmd" }
-tcp_cwt = { path = "../tcp_cwt" }
+tcp_subject_selection = { path = "../00tcp_subject_selection" }
+tcp_fmri_parcellation = { path = "../01tcp_fmri_parcellation" }
+tcp_fmri_segment_trials = { path = "../02tcp_fmri_segment_trials" }
+tcp_mvmd = { path = "../03tcp_mvmd" }
+tcp_cwt = { path = "../04tcp_cwt" }
 tcp_fmri_process = { path = "../tcp_fmri_process" }

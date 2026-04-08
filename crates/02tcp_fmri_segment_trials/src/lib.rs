@@ -23,6 +23,8 @@ struct BlockTimeseries {
     block_end_s: f64,
     cortical: Array2<f32>,
     subcortical: Array2<f32>,
+    cortical_std: Option<Array2<f32>>,
+    subcortical_std: Option<Array2<f32>>,
 }
 
 /// Condition-specific onset and duration lists for mixed block/event-related GLM modeling.
@@ -48,6 +50,7 @@ pub fn run(cfg: &TcpTrialSegmentationConfig) -> Result<()> {
         tcp_dir = % cfg.tcp_dir.display(),
         bold_ts_dir = %cfg.bold_ts_dir.display(),
         glm_output_dir = %cfg.glm_output_dir.display(),
+        force = cfg.force,
         "starting fMRI trial segmentation"
     );
 
@@ -96,12 +99,19 @@ pub fn run(cfg: &TcpTrialSegmentationConfig) -> Result<()> {
                 None => continue,
             };
 
-            let event_file_base = {
-                let mut b = BidsFilename::parse(filename_without_extension).keep(&["task", "run"]);
-                b.suffix = None;
-                format!("{}_{}", formatted_id, b.to_stem())
+            let h5_name = match file.file_name().and_then(|n| n.to_str()) {
+                Some(name) => name,
+                None => continue,
             };
-            let event_file_name = format!("{}_events.tsv", event_file_base);
+            let mut bids = BidsFilename::parse(h5_name).keep(&["sub", "task", "run"]);
+            bids.suffix = None;
+            bids.extension = None;
+            let event_file_base = bids.to_stem();
+
+            let mut events_bids = bids.clone();
+            events_bids.suffix = Some("events".to_string());
+            events_bids.extension = Some(".tsv".to_string());
+            let event_file_name = events_bids.to_filename();
             let event_file = &cfg
                 .tcp_dir
                 .join(formatted_id)
@@ -127,7 +137,7 @@ pub fn run(cfg: &TcpTrialSegmentationConfig) -> Result<()> {
 
             let h5_file = hdf5::File::open_rw(file)?;
             let blockwise_timeseries = get_timeseries_per_event_block(&event_blocks, &h5_file)?;
-            write_blocks_h5(&h5_file, &blockwise_timeseries)?;
+            write_blocks_h5(&h5_file, &blockwise_timeseries, cfg.force)?;
 
             let write_duration_ms = write_start.elapsed().as_millis();
 
@@ -150,6 +160,16 @@ fn get_timeseries_per_event_block(
     let cortical: Array2<f32> = h5_file.dataset("tcp_cortical_raw")?.read_2d()?;
     let subcortical: Array2<f32> = h5_file.dataset("tcp_subcortical_raw")?.read_2d()?;
     let n_timepoints = cortical.shape()[1];
+
+    // Standardized datasets may not be present in older files.
+    let cortical_std_full: Option<Array2<f32>> = h5_file
+        .dataset("tcp_cortical_standardized")
+        .ok()
+        .and_then(|ds| ds.read_2d().ok());
+    let subcortical_std_full: Option<Array2<f32>> = h5_file
+        .dataset("tcp_subcortical_standardized")
+        .ok()
+        .and_then(|ds| ds.read_2d().ok());
 
     let block_ids = event_blocks.column("block_id")?.i32()?;
     let trial_types = event_blocks.column("trial_type")?.str()?;
@@ -194,6 +214,12 @@ fn get_timeseries_per_event_block(
 
         let cortical_block = cortical.slice(s![.., start_idx..end_idx]).to_owned();
         let subcortical_block = subcortical.slice(s![.., start_idx..end_idx]).to_owned();
+        let cortical_std_block = cortical_std_full
+            .as_ref()
+            .map(|a| a.slice(s![.., start_idx..end_idx]).to_owned());
+        let subcortical_std_block = subcortical_std_full
+            .as_ref()
+            .map(|a| a.slice(s![.., start_idx..end_idx]).to_owned());
 
         result.push(BlockTimeseries {
             block_id,
@@ -202,65 +228,130 @@ fn get_timeseries_per_event_block(
             block_end_s: block_end,
             cortical: cortical_block,
             subcortical: subcortical_block,
+            cortical_std: cortical_std_block,
+            subcortical_std: subcortical_std_block,
         });
     }
 
     Ok(result)
 }
 
-fn write_blocks_h5(h5_file: &hdf5::File, blocks: &[BlockTimeseries]) -> Result<()> {
+fn write_blocks_h5(h5_file: &hdf5::File, blocks: &[BlockTimeseries], force: bool) -> Result<()> {
     let blocks_group = match h5_file.group("blocks") {
         Ok(g) => g,
         Err(_) => h5_file.create_group("blocks")?,
     };
 
+    // Only create blocks_standardized group if any block has standardized data.
+    let has_std = blocks.iter().any(|b| b.cortical_std.is_some());
+    let blocks_std_group = if has_std {
+        Some(match h5_file.group("blocks_standardized") {
+            Ok(g) => g,
+            Err(_) => h5_file.create_group("blocks_standardized")?,
+        })
+    } else {
+        None
+    };
+
     for block in blocks {
         let group_name = format!("block_{}", block.block_id);
 
-        if blocks_group.group(&group_name).is_ok() {
-            continue;
+        // --- raw blocks ---
+        let skip_raw = !force && blocks_group.group(&group_name).is_ok();
+        if !skip_raw {
+            if force {
+                // Remove existing group before recreating under force.
+                let _ = blocks_group.unlink(&group_name);
+            }
+            let block_group = blocks_group.create_group(&group_name)?;
+
+            let c_shape = block.cortical.shape();
+            let c_ds = block_group
+                .new_dataset::<f32>()
+                .shape([c_shape[0], c_shape[1]])
+                .create("cortical_raw")?;
+            c_ds.write_raw(block.cortical.as_slice().unwrap())?;
+
+            let s_shape = block.subcortical.shape();
+            let s_ds = block_group
+                .new_dataset::<f32>()
+                .shape([s_shape[0], s_shape[1]])
+                .create("subcortical_raw")?;
+            s_ds.write_raw(block.subcortical.as_slice().unwrap())?;
+
+            let trial_type_val: VarLenUnicode = block.trial_type.parse()?;
+            block_group
+                .new_attr::<VarLenUnicode>()
+                .shape(())
+                .create("trial_type")?
+                .as_writer()
+                .write_scalar(&trial_type_val)?;
+
+            block_group
+                .new_attr::<f64>()
+                .shape(())
+                .create("onset_s")?
+                .as_writer()
+                .write_scalar(&block.onset_s)?;
+
+            block_group
+                .new_attr::<f64>()
+                .shape(())
+                .create("block_end_s")?
+                .as_writer()
+                .write_scalar(&block.block_end_s)?;
         }
 
-        let block_group = blocks_group.create_group(&group_name)?;
+        // --- standardized blocks ---
+        if let (Some(std_group), Some(cortical_std), Some(subcortical_std)) = (
+            blocks_std_group.as_ref(),
+            block.cortical_std.as_ref(),
+            block.subcortical_std.as_ref(),
+        ) {
+            let skip_std = !force && std_group.group(&group_name).is_ok();
+            if !skip_std {
+                if force {
+                    let _ = std_group.unlink(&group_name);
+                }
+                let std_block_group = std_group.create_group(&group_name)?;
 
-        // Write cortical timeseries: shape [n_rois, n_block_timepoints]
-        let c_shape = block.cortical.shape();
-        let c_ds = block_group
-            .new_dataset::<f32>()
-            .shape([c_shape[0], c_shape[1]])
-            .create("cortical_raw")?;
-        c_ds.write_raw(block.cortical.as_slice().unwrap())?;
+                let c_shape = cortical_std.shape();
+                let c_ds = std_block_group
+                    .new_dataset::<f32>()
+                    .shape([c_shape[0], c_shape[1]])
+                    .create("cortical_standardized")?;
+                c_ds.write_raw(cortical_std.as_slice().unwrap())?;
 
-        // Write subcortical timeseries: shape [n_rois, n_block_timepoints]
-        let s_shape = block.subcortical.shape();
-        let s_ds = block_group
-            .new_dataset::<f32>()
-            .shape([s_shape[0], s_shape[1]])
-            .create("subcortical_raw")?;
-        s_ds.write_raw(block.subcortical.as_slice().unwrap())?;
+                let s_shape = subcortical_std.shape();
+                let s_ds = std_block_group
+                    .new_dataset::<f32>()
+                    .shape([s_shape[0], s_shape[1]])
+                    .create("subcortical_standardized")?;
+                s_ds.write_raw(subcortical_std.as_slice().unwrap())?;
 
-        // Store block metadata as attributes
-        let trial_type_val: VarLenUnicode = block.trial_type.parse()?;
-        block_group
-            .new_attr::<VarLenUnicode>()
-            .shape(())
-            .create("trial_type")?
-            .as_writer()
-            .write_scalar(&trial_type_val)?;
+                let trial_type_val: VarLenUnicode = block.trial_type.parse()?;
+                std_block_group
+                    .new_attr::<VarLenUnicode>()
+                    .shape(())
+                    .create("trial_type")?
+                    .as_writer()
+                    .write_scalar(&trial_type_val)?;
 
-        block_group
-            .new_attr::<f64>()
-            .shape(())
-            .create("onset_s")?
-            .as_writer()
-            .write_scalar(&block.onset_s)?;
+                std_block_group
+                    .new_attr::<f64>()
+                    .shape(())
+                    .create("onset_s")?
+                    .as_writer()
+                    .write_scalar(&block.onset_s)?;
 
-        block_group
-            .new_attr::<f64>()
-            .shape(())
-            .create("block_end_s")?
-            .as_writer()
-            .write_scalar(&block.block_end_s)?;
+                std_block_group
+                    .new_attr::<f64>()
+                    .shape(())
+                    .create("block_end_s")?
+                    .as_writer()
+                    .write_scalar(&block.block_end_s)?;
+            }
+        }
     }
 
     Ok(())
