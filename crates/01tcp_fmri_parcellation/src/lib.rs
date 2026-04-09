@@ -13,10 +13,12 @@ use tracing::{debug, error, info, info_span, warn};
 
 /// Tracks which root-level datasets are absent from an existing HDF5 file.
 ///
-/// The raw group (`cortical_raw`, `subcortical_raw`, `timeseries_raw`) and the
-/// standardized group (`cortical_std`, `subcortical_std`, `timeseries_std`) are
-/// checked independently, so a partially-written or previously-extended file can
-/// be completed without re-running the NIfTI masker.
+/// Three groups are tracked independently:
+///   - raw: parcellated signal with no preprocessing
+///   - std: post-parcellation z-score standardization (per-ROI temporal z-score)
+///   - voxel_zscore: voxel-wise z-score normalization applied before parcellation
+///
+/// Partial files can be extended without re-running the NIfTI masker.
 #[derive(Debug)]
 struct MissingDatasets {
     cortical_raw: bool,
@@ -25,11 +27,15 @@ struct MissingDatasets {
     cortical_std: bool,
     subcortical_std: bool,
     timeseries_std: bool,
+    cortical_voxel_zscore: bool,
+    subcortical_voxel_zscore: bool,
+    timeseries_voxel_zscore: bool,
 }
 
 impl MissingDatasets {
     /// All datasets need to be written (fresh file or --force).
-    fn all() -> Self {
+    /// `voxelwise_zscore` controls whether the voxel-zscore group is included.
+    fn all(voxelwise_zscore: bool) -> Self {
         Self {
             cortical_raw: true,
             subcortical_raw: true,
@@ -37,6 +43,9 @@ impl MissingDatasets {
             cortical_std: true,
             subcortical_std: true,
             timeseries_std: true,
+            cortical_voxel_zscore: voxelwise_zscore,
+            subcortical_voxel_zscore: voxelwise_zscore,
+            timeseries_voxel_zscore: voxelwise_zscore,
         }
     }
 
@@ -48,6 +57,9 @@ impl MissingDatasets {
             && !self.cortical_std
             && !self.subcortical_std
             && !self.timeseries_std
+            && !self.cortical_voxel_zscore
+            && !self.subcortical_voxel_zscore
+            && !self.timeseries_voxel_zscore
     }
 
     /// True when any raw dataset is absent (masker must be run).
@@ -55,14 +67,23 @@ impl MissingDatasets {
         self.cortical_raw || self.subcortical_raw || self.timeseries_raw
     }
 
-    /// True when any standardized dataset is absent.
+    /// True when any post-parcellation standardized dataset is absent.
     fn needs_std(&self) -> bool {
         self.cortical_std || self.subcortical_std || self.timeseries_std
+    }
+
+    /// True when any voxel-wise z-score dataset is absent (masker must be re-run with voxelwise config).
+    fn needs_voxel_zscore(&self) -> bool {
+        self.cortical_voxel_zscore
+            || self.subcortical_voxel_zscore
+            || self.timeseries_voxel_zscore
     }
 }
 
 /// Inspect an existing HDF5 file and return which datasets are absent.
-fn check_missing_datasets(path: &Path) -> MissingDatasets {
+/// `voxelwise_zscore` controls whether the voxelzscore group is checked at all;
+/// when false, those fields are always false so they never trigger computation.
+fn check_missing_datasets(path: &Path, voxelwise_zscore: bool) -> MissingDatasets {
     match hdf5::File::open(path) {
         Ok(f) => MissingDatasets {
             cortical_raw: f.dataset("tcp_cortical_raw").is_err(),
@@ -71,8 +92,14 @@ fn check_missing_datasets(path: &Path) -> MissingDatasets {
             cortical_std: f.dataset("tcp_cortical_standardized").is_err(),
             subcortical_std: f.dataset("tcp_subcortical_standardized").is_err(),
             timeseries_std: f.dataset("tcp_timeseries_standardized").is_err(),
+            cortical_voxel_zscore: voxelwise_zscore
+                && f.dataset("tcp_cortical_voxelzscore").is_err(),
+            subcortical_voxel_zscore: voxelwise_zscore
+                && f.dataset("tcp_subcortical_voxelzscore").is_err(),
+            timeseries_voxel_zscore: voxelwise_zscore
+                && f.dataset("tcp_timeseries_voxelzscore").is_err(),
         },
-        Err(_) => MissingDatasets::all(),
+        Err(_) => MissingDatasets::all(voxelwise_zscore),
     }
 }
 
@@ -103,6 +130,7 @@ pub fn run(cfg: &TcpFmriParcellationConfig) -> Result<()> {
         subcortical_atlas = %cfg.subcortical_atlas.display(),
         dry_run = cfg.dry_run,
         force = cfg.force,
+        voxelwise_zscore = cfg.voxelwise_zscore,
         "starting fMRI preprocessing pipeline"
     );
 
@@ -239,9 +267,9 @@ pub fn run(cfg: &TcpFmriParcellationConfig) -> Result<()> {
             //   no file  → all missing (fresh create)
             //   file exists, no force → inspect per-dataset; only fill gaps
             let missing = if cfg.force || !output_path.exists() {
-                MissingDatasets::all()
+                MissingDatasets::all(cfg.voxelwise_zscore)
             } else {
-                check_missing_datasets(&output_path)
+                check_missing_datasets(&output_path, cfg.voxelwise_zscore)
             };
 
             if missing.all_present() {
@@ -347,7 +375,7 @@ pub fn run(cfg: &TcpFmriParcellationConfig) -> Result<()> {
                 (cortical_raw, subcortical_raw)
             };
 
-            // Compute standardized variants only when needed.
+            // Compute post-parcellation z-score standardized variants only when needed.
             let (cortical_std, subcortical_std) = if missing.needs_std() {
                 let std_cfg = MaskerSignalConfig::default().standardize(Standardize::ZscoreSample);
                 let c = preprocess_signals(&cortical_raw, &std_cfg);
@@ -356,6 +384,42 @@ pub fn run(cfg: &TcpFmriParcellationConfig) -> Result<()> {
             } else {
                 (None, None)
             };
+
+            // Run the masker with voxel-wise z-score normalization (applied before parcellation).
+            let (cortical_voxel_zscore, subcortical_voxel_zscore) =
+                if missing.needs_voxel_zscore() {
+                    let vz_config = MaskerSignalConfig::default().voxelwise_zscore(true);
+
+                    let cortical_start = Instant::now();
+                    let cortical_masker =
+                        LabelsMasker::with_config(&cfg.cortical_atlas, vz_config.clone())?;
+                    let c = cortical_masker.fit_transform(&file_path)?;
+                    debug!(
+                        subject_key = subject_key,
+                        atlas_type = "cortical",
+                        n_rois = c.shape()[0],
+                        n_timepoints = c.shape()[1],
+                        duration_ms = cortical_start.elapsed().as_millis(),
+                        "voxel-wise z-score parcellation completed"
+                    );
+
+                    let subcortical_start = Instant::now();
+                    let subcortical_masker =
+                        LabelsMasker::with_config(&cfg.subcortical_atlas, vz_config)?;
+                    let s = subcortical_masker.fit_transform(&file_path)?;
+                    debug!(
+                        subject_key = subject_key,
+                        atlas_type = "subcortical",
+                        n_rois = s.shape()[0],
+                        n_timepoints = s.shape()[1],
+                        duration_ms = subcortical_start.elapsed().as_millis(),
+                        "voxel-wise z-score parcellation completed"
+                    );
+
+                    (Some(c), Some(s))
+                } else {
+                    (None, None)
+                };
 
             // Prepare output directory.
             if let Some(parent) = output_path.parent() {
@@ -376,6 +440,8 @@ pub fn run(cfg: &TcpFmriParcellationConfig) -> Result<()> {
                 &subcortical_raw,
                 cortical_std.as_ref(),
                 subcortical_std.as_ref(),
+                cortical_voxel_zscore.as_ref(),
+                subcortical_voxel_zscore.as_ref(),
             )?;
             let write_duration_ms = write_start.elapsed().as_millis();
 
@@ -427,9 +493,12 @@ pub fn run(cfg: &TcpFmriParcellationConfig) -> Result<()> {
 ///   tcp_cortical_raw             — per-atlas parcellated signal, no preprocessing
 ///   tcp_subcortical_raw          — per-atlas parcellated signal, no preprocessing
 ///   tcp_timeseries_raw           — cortical + subcortical concatenated, no preprocessing
-///   tcp_cortical_standardized    — z-score standardized (per sample)
-///   tcp_subcortical_standardized — z-score standardized (per sample)
-///   tcp_timeseries_standardized  — cortical + subcortical concatenated, z-score standardized
+///   tcp_cortical_standardized    — post-parcellation z-score (per-ROI temporal)
+///   tcp_subcortical_standardized — post-parcellation z-score (per-ROI temporal)
+///   tcp_timeseries_standardized  — cortical + subcortical concatenated, post-parcellation z-score
+///   tcp_cortical_voxelzscore     — voxel-wise z-score applied before parcellation
+///   tcp_subcortical_voxelzscore  — voxel-wise z-score applied before parcellation
+///   tcp_timeseries_voxelzscore   — cortical + subcortical concatenated, voxel-wise z-score
 fn append_missing_datasets(
     path: &Path,
     missing: &MissingDatasets,
@@ -437,6 +506,8 @@ fn append_missing_datasets(
     subcortical_raw: &Array2<f32>,
     cortical_std: Option<&Array2<f32>>,
     subcortical_std: Option<&Array2<f32>>,
+    cortical_voxel_zscore: Option<&Array2<f32>>,
+    subcortical_voxel_zscore: Option<&Array2<f32>>,
 ) -> Result<()> {
     let file = if path.exists() {
         hdf5::File::open_rw(path)?
@@ -469,6 +540,23 @@ fn append_missing_datasets(
         if let (Some(c), Some(s)) = (cortical_std, subcortical_std) {
             let ts = concatenate(Axis(0), &[c.view(), s.view()])?;
             write_2d_dataset(&file, &ts, "tcp_timeseries_standardized")?;
+        }
+    }
+
+    if missing.cortical_voxel_zscore {
+        if let Some(c) = cortical_voxel_zscore {
+            write_2d_dataset(&file, c, "tcp_cortical_voxelzscore")?;
+        }
+    }
+    if missing.subcortical_voxel_zscore {
+        if let Some(s) = subcortical_voxel_zscore {
+            write_2d_dataset(&file, s, "tcp_subcortical_voxelzscore")?;
+        }
+    }
+    if missing.timeseries_voxel_zscore {
+        if let (Some(c), Some(s)) = (cortical_voxel_zscore, subcortical_voxel_zscore) {
+            let ts = concatenate(Axis(0), &[c.view(), s.view()])?;
+            write_2d_dataset(&file, &ts, "tcp_timeseries_voxelzscore")?;
         }
     }
 

@@ -53,6 +53,13 @@ pub struct TcpFmriParcellationConfig {
     /// Force reprocessing of subjects that already have preprocessed output
     #[serde(default)]
     pub force: bool,
+    /// Apply voxel-wise z-score normalization before parcellation.
+    ///
+    /// Each voxel's timeseries is normalized by its own temporal mean and
+    /// standard deviation prior to ROI averaging. Produces additional HDF5
+    /// datasets (`tcp_cortical_voxelzscore`, etc.) alongside the raw outputs.
+    #[serde(default)]
+    pub voxelwise_zscore: bool,
 }
 
 impl Default for TcpFmriParcellationConfig {
@@ -65,6 +72,7 @@ impl Default for TcpFmriParcellationConfig {
             subcortical_atlas: PathBuf::from("/path/to/atlas"),
             dry_run: false,
             force: false,
+            voxelwise_zscore: false,
         }
     }
 }

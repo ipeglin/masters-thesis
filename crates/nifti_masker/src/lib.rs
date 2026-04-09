@@ -28,8 +28,17 @@ pub enum Standardize {
 pub struct MaskerSignalConfig {
     /// Whether to perform linear detrending
     pub detrend: bool,
-    /// Standardization strategy
+    /// Standardization strategy applied to ROI timeseries after parcellation
     pub standardize: Standardize,
+    /// Whether to apply voxel-wise z-score normalization before parcellation.
+    ///
+    /// Each voxel's timeseries is independently normalized by its own temporal
+    /// mean and standard deviation before ROI averaging. This corresponds to
+    /// "subject-level Z-score maps" as described in the neuroimaging literature:
+    /// each voxel's amplitude is standardized across the full scan duration,
+    /// making signal amplitude comparable across voxels and subjects prior to
+    /// any spatial averaging.
+    pub voxelwise_zscore: bool,
 }
 
 impl Default for MaskerSignalConfig {
@@ -37,6 +46,7 @@ impl Default for MaskerSignalConfig {
         Self {
             detrend: false,
             standardize: Standardize::None,
+            voxelwise_zscore: false,
         }
     }
 }
@@ -48,6 +58,7 @@ impl MaskerSignalConfig {
         Self {
             detrend: true,
             standardize: Standardize::ZscoreSample,
+            voxelwise_zscore: false,
         }
     }
 
@@ -63,9 +74,15 @@ impl MaskerSignalConfig {
         self
     }
 
+    /// Builder method to enable voxel-wise z-score normalization before parcellation
+    pub fn voxelwise_zscore(mut self, enabled: bool) -> Self {
+        self.voxelwise_zscore = enabled;
+        self
+    }
+
     /// Check if any preprocessing is enabled
     pub fn is_enabled(&self) -> bool {
-        self.detrend || self.standardize != Standardize::None
+        self.detrend || self.standardize != Standardize::None || self.voxelwise_zscore
     }
 }
 
@@ -204,6 +221,44 @@ fn standardize_signal(
     }
 }
 
+/// Apply voxel-wise z-score normalization to a 4D BOLD array in-place.
+///
+/// Each voxel's timeseries `[x, y, z, :]` is independently normalized by its
+/// own temporal mean and sample standard deviation (ddof=1). Voxels with near-
+/// zero variance (e.g. outside the brain mask) are left unchanged.
+fn voxelwise_zscore_bold(data: &mut Array4<f32>) {
+    let shape = data.shape().to_vec();
+    let (nx, ny, nz, nt) = (shape[0], shape[1], shape[2], shape[3]);
+
+    if nt <= 1 {
+        return;
+    }
+
+    for x in 0..nx {
+        for y in 0..ny {
+            for z in 0..nz {
+                let mean: f32 = (0..nt).map(|t| data[[x, y, z, t]]).sum::<f32>() / nt as f32;
+                let variance: f32 = (0..nt)
+                    .map(|t| {
+                        let d = data[[x, y, z, t]] - mean;
+                        d * d
+                    })
+                    .sum::<f32>()
+                    / (nt - 1) as f32;
+                let std = variance.sqrt();
+
+                if std < f32::EPSILON {
+                    continue;
+                }
+
+                for t in 0..nt {
+                    data[[x, y, z, t]] = (data[[x, y, z, t]] - mean) / std;
+                }
+            }
+        }
+    }
+}
+
 /// Apply preprocessing (detrend and/or standardize) to extracted time series.
 ///
 /// Based on nilearn's signal cleaning pipeline.
@@ -335,26 +390,39 @@ impl LabelsMasker {
         let bold_affine = Self::get_affine_from_header(bold_header);
         let bold_data = Self::volume_to_array4(bold_obj.into_volume())?;
 
-        let bold_shape = bold_data.shape();
-        let n_timepoints = bold_shape[3];
+        let (bold_sx, bold_sy, bold_sz, n_timepoints) = {
+            let s = bold_data.shape();
+            (s[0], s[1], s[2], s[3])
+        };
 
         debug!(
-            bold_shape_x = bold_shape[0],
-            bold_shape_y = bold_shape[1],
-            bold_shape_z = bold_shape[2],
+            bold_shape_x = bold_sx,
+            bold_shape_y = bold_sy,
+            bold_shape_z = bold_sz,
             n_timepoints = n_timepoints,
             bold_path = %bold_path.display(),
             "BOLD data loaded"
         );
 
+        // Apply voxel-wise z-score normalization before parcellation if configured
+        let mut bold_data = bold_data;
+        if self.signal_config.voxelwise_zscore {
+            debug!(
+                bold_path = %bold_path.display(),
+                n_timepoints = n_timepoints,
+                "applying voxel-wise z-score normalization"
+            );
+            voxelwise_zscore_bold(&mut bold_data);
+        }
+
         // Resample atlas to BOLD space
         let needs_resampling =
-            self.labels_volume.shape() != &[bold_shape[0], bold_shape[1], bold_shape[2]];
+            self.labels_volume.shape() != &[bold_sx, bold_sy, bold_sz];
 
         debug!(
             needs_resampling = needs_resampling,
             atlas_shape = ?self.atlas_shape,
-            bold_shape = ?[bold_shape[0], bold_shape[1], bold_shape[2]],
+            bold_shape = ?[bold_sx, bold_sy, bold_sz],
             "checking resampling requirement"
         );
 
@@ -747,6 +815,31 @@ mod tests {
         assert!((standardized[[0, 0]] - 0.0).abs() < 1e-5);
         assert!((standardized[[0, 1]] - 10.0).abs() < 1e-5);
         assert!((standardized[[0, 2]] - (-10.0)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_voxelwise_zscore_bold() {
+        // 2x1x1 spatial, 5 timepoints
+        // voxel (0,0,0): [1, 2, 3, 4, 5]  mean=3, std=sqrt(2.5)
+        // voxel (1,0,0): [10, 10, 10, 10, 10]  constant -> should be left unchanged
+        let mut data = Array4::<f32>::zeros((2, 1, 1, 5));
+        for t in 0..5usize {
+            data[[0, 0, 0, t]] = (t + 1) as f32;
+            data[[1, 0, 0, t]] = 10.0;
+        }
+
+        voxelwise_zscore_bold(&mut data);
+
+        // Voxel 0: mean should be ~0, std ~1
+        let mean0: f32 = (0..5).map(|t| data[[0, 0, 0, t]]).sum::<f32>() / 5.0;
+        assert!(mean0.abs() < 1e-5, "mean {} should be near zero", mean0);
+        let var0: f32 = (0..5).map(|t| data[[0, 0, 0, t]].powi(2)).sum::<f32>() / 4.0;
+        assert!((var0.sqrt() - 1.0).abs() < 1e-5, "std {} should be near 1", var0.sqrt());
+
+        // Voxel 1: constant, left unchanged
+        for t in 0..5 {
+            assert_eq!(data[[1, 0, 0, t]], 10.0);
+        }
     }
 
     #[test]

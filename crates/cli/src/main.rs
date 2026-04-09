@@ -75,6 +75,12 @@ enum Command {
         /// Force reprocessing of subjects that already have preprocessed output
         #[arg(long, short = 'f')]
         force: bool,
+
+        /// Apply voxel-wise z-score normalization before parcellation.
+        /// Produces additional HDF5 datasets (tcp_cortical_voxelzscore, etc.).
+        /// Does not imply --force; existing voxelzscore datasets are skipped.
+        #[arg(long)]
+        voxelwise_zscore: bool,
     },
     SegmentTrials {
         #[arg(long)]
@@ -228,6 +234,7 @@ fn main() -> Result<()> {
             subcortical_atlas,
             dry_run,
             force,
+            voxelwise_zscore,
         } => {
             let mut p = cfg.tcp_fmri_parcellation;
 
@@ -253,6 +260,9 @@ fn main() -> Result<()> {
             };
             if force {
                 p.force = true
+            };
+            if voxelwise_zscore {
+                p.voxelwise_zscore = true
             };
 
             tcp_fmri_parcellation::run(&p)
