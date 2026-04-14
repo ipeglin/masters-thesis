@@ -32,7 +32,7 @@ fn cwt_scalogram(signal: &Array2<f64>) -> (Vec<f64>, [usize; 3]) {
     let tr: f64 = 0.8;
     let w0: f64 = 6.0;
     let f_min: f64 = 0.008; // Hz
-    let f_max: f64 = 0.5;   // Hz — below Nyquist (0.625 Hz at TR=0.8 s)
+    let f_max: f64 = 0.5; // Hz — below Nyquist (0.625 Hz at TR=0.8 s)
     let n_scales: usize = 64;
     let scales: Vec<f64> = (0..n_scales)
         .map(|i| {
@@ -62,7 +62,7 @@ fn cwt_scalogram(signal: &Array2<f64>) -> (Vec<f64>, [usize; 3]) {
             channel_slice,
             |points, scale| complex_morlet(points, 6.0, 1.0, 0.0, scale),
             &scales,
-            Some(true),
+            Some(false),
         )
         .expect("scalogram computation should succeed");
 
@@ -133,9 +133,10 @@ pub fn run(cfg: &CwtConfig) -> Result<()> {
         );
 
         for file_path in &available_timeseries {
+            let file_result: anyhow::Result<()> = (|| {
             let bids = BidsFilename::parse(match file_path.file_name().and_then(|n| n.to_str()) {
                 Some(name) => name,
-                None => continue,
+                None => return Ok(()),
             });
             let task_name = bids.get("task").unwrap_or("unknown");
 
@@ -211,10 +212,8 @@ pub fn run(cfg: &CwtConfig) -> Result<()> {
                     );
                 }
                 Ok(std_dataset) => {
-                    let cwt_std_group =
-                        open_or_create_group(&h5_file, "cwt_standardized", false)?;
-                    let wb_std_done =
-                        !cfg.force && cwt_std_group.group("whole-band").is_ok();
+                    let cwt_std_group = open_or_create_group(&h5_file, "cwt_standardized", false)?;
+                    let wb_std_done = !cfg.force && cwt_std_group.group("whole-band").is_ok();
 
                     if wb_std_done {
                         info!(
@@ -252,13 +251,7 @@ pub fn run(cfg: &CwtConfig) -> Result<()> {
                         let write_start = Instant::now();
                         let wb_std_group =
                             open_or_create_group(&cwt_std_group, "whole-band", cfg.force)?;
-                        write_dataset(
-                            &wb_std_group,
-                            "scalogram",
-                            &scalogram_data,
-                            &shape,
-                            None,
-                        )?;
+                        write_dataset(&wb_std_group, "scalogram", &scalogram_data, &shape, None)?;
                         let write_duration_ms = write_start.elapsed().as_millis();
 
                         info!(
@@ -336,24 +329,24 @@ pub fn run(cfg: &CwtConfig) -> Result<()> {
                                 block_group.dataset("subcortical_raw")?.read_2d()?;
                             let block_signal_f32 =
                                 concatenate(Axis(0), &[cortical.view(), subcortical.view()])?;
-                            let [block_channels, block_timepoints] =
-                                match block_signal_f32.shape() {
-                                    &[r, c] => [r, c],
-                                    _ => {
-                                        error_count += 1;
-                                        warn!(
-                                            subject = formatted_id,
-                                            task_name = task_name,
-                                            block = block_name,
-                                            block_idx = block_idx,
-                                            num_blocks = block_names.len(),
-                                            reason = "unexpected_block_shape",
-                                            shape = ?block_signal_f32.shape(),
-                                            "skipping raw block scalogram due to unexpected signal shape"
-                                        );
-                                        continue;
-                                    }
-                                };
+                            let [block_channels, block_timepoints] = match block_signal_f32.shape()
+                            {
+                                &[r, c] => [r, c],
+                                _ => {
+                                    error_count += 1;
+                                    warn!(
+                                        subject = formatted_id,
+                                        task_name = task_name,
+                                        block = block_name,
+                                        block_idx = block_idx,
+                                        num_blocks = block_names.len(),
+                                        reason = "unexpected_block_shape",
+                                        shape = ?block_signal_f32.shape(),
+                                        "skipping raw block scalogram due to unexpected signal shape"
+                                    );
+                                    continue;
+                                }
+                            };
                             let block_signal_f64 = block_signal_f32.mapv(|val| val as f64);
 
                             info!(
@@ -468,24 +461,24 @@ pub fn run(cfg: &CwtConfig) -> Result<()> {
                                 block_group.dataset("subcortical_standardized")?.read_2d()?;
                             let block_signal_f32 =
                                 concatenate(Axis(0), &[cortical.view(), subcortical.view()])?;
-                            let [block_channels, block_timepoints] =
-                                match block_signal_f32.shape() {
-                                    &[r, c] => [r, c],
-                                    _ => {
-                                        error_count += 1;
-                                        warn!(
-                                            subject = formatted_id,
-                                            task_name = task_name,
-                                            block = block_name,
-                                            block_idx = block_idx,
-                                            num_blocks = block_names.len(),
-                                            reason = "unexpected_block_shape",
-                                            shape = ?block_signal_f32.shape(),
-                                            "skipping standardized block scalogram due to unexpected signal shape"
-                                        );
-                                        continue;
-                                    }
-                                };
+                            let [block_channels, block_timepoints] = match block_signal_f32.shape()
+                            {
+                                &[r, c] => [r, c],
+                                _ => {
+                                    error_count += 1;
+                                    warn!(
+                                        subject = formatted_id,
+                                        task_name = task_name,
+                                        block = block_name,
+                                        block_idx = block_idx,
+                                        num_blocks = block_names.len(),
+                                        reason = "unexpected_block_shape",
+                                        shape = ?block_signal_f32.shape(),
+                                        "skipping standardized block scalogram due to unexpected signal shape"
+                                    );
+                                    continue;
+                                }
+                            };
                             let block_signal_f64 = block_signal_f32.mapv(|val| val as f64);
 
                             info!(
@@ -504,11 +497,8 @@ pub fn run(cfg: &CwtConfig) -> Result<()> {
                             let block_cwt_duration_ms = block_cwt_start.elapsed().as_millis();
 
                             let block_write_start = Instant::now();
-                            let cwt_std_block_group = open_or_create_group(
-                                &cwt_std_blocks_group,
-                                block_name,
-                                cfg.force,
-                            )?;
+                            let cwt_std_block_group =
+                                open_or_create_group(&cwt_std_blocks_group, block_name, cfg.force)?;
                             write_dataset(
                                 &cwt_std_block_group,
                                 "scalogram",
@@ -541,6 +531,17 @@ pub fn run(cfg: &CwtConfig) -> Result<()> {
                         );
                     }
                 }
+            }
+            Ok(())
+            })();
+            if let Err(e) = file_result {
+                error_count += 1;
+                warn!(
+                    subject = formatted_id,
+                    file = %file_path.display(),
+                    error = %e,
+                    "skipping file due to HDF5 error"
+                );
             }
         }
     }

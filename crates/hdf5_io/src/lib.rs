@@ -93,15 +93,19 @@ pub fn open_or_create(path: &Path) -> Result<hdf5::File> {
 /// If `force` is `true` and the group already exists it is unlinked first,
 /// so the returned group is always empty.
 pub fn open_or_create_group(parent: &hdf5::Group, name: &str, force: bool) -> Result<hdf5::Group> {
-    let exists = parent.group(name).is_ok();
-    if exists {
-        if force {
+    match parent.group(name) {
+        Ok(existing) => {
+            if !force {
+                return Ok(existing);
+            }
+            drop(existing);
             parent.unlink(name)?;
-        } else {
-            return Ok(parent.group(name)?);
         }
+        Err(_) => {}
     }
-    Ok(parent.create_group(name)?)
+    parent
+        .create_group(name)
+        .map_err(|e| anyhow::anyhow!("cannot create HDF5 group '{}': {}", name, e))
 }
 
 /// Writes a typed dataset to an already-open HDF5 group.
