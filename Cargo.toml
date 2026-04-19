@@ -3,7 +3,7 @@ resolver = "2"
 members = [
   "crates/cli",
   "crates/config",
-  "crates/fc",
+  "crates/06fc",
   "crates/hdf5_io",
   "crates/nifti_masker",
   "crates/signals",
