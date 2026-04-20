@@ -83,6 +83,16 @@ if [ "$IS_IDUN" = true ]; then
     if [ -f "$ENV_SCRIPT" ]; then
         source "$ENV_SCRIPT"
     fi
+    
+    if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+        echo ""
+        echo "!! WARNING: SCRIPT NOT SOURCED !!"
+        echo "Because you ran this with 'bash' instead of 'source', the Rust/CUDA"
+        echo "modules and IDUN environment variables will NOT persist in your terminal."
+        echo "To apply them to your current session, run:"
+        echo "    source $ENV_SCRIPT"
+        echo ""
+    fi
 else
     # Simple local check
     if ! command -v h5cc >/dev/null 2>&1; then

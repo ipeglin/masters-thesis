@@ -27,7 +27,8 @@ Rust 1.82.0+. Git-annex for large data. HDF5 for timeseries.
 Run main initialization script to prepare paths, atlases, and system environment.
 
 ```bash
-bash scripts/init.sh
+# Sourcing is highly recommended on IDUN to persist module environment variables
+source scripts/init.sh
 ```
 
 ### IDUN Cluster Setup
@@ -36,17 +37,17 @@ IDUN needs specific modules and environment prep. The `init.sh` script handles t
 
 ```bash
 # Option 1: Pass idun argument
-bash scripts/init.sh idun
+source scripts/init.sh idun
 
 # Option 2: Empty trigger file
 touch .sys-idun
-bash scripts/init.sh
+source scripts/init.sh
 ```
 This auto-loads IDUN specific config defaults, builds HDF5 (if missing), and sources `sys-idun_env.sh` (module load Rust/CUDA).
 
 ### Local Machine Setup
 
-**CRITICAL:** Run `init.sh` on local (Mac/Windows/Linux). It copies `config.toml` and fetches atlases. But **you MUST manually edit `config.toml`** and set your local directory paths (`tcp_repo_dir`, `fmriprep_output_dir`, etc.) after script finishes.
+**CRITICAL:** Run `scripts/init.sh` on local (Mac/Windows/Linux). It copies `config.toml` and fetches atlases. But **you MUST manually edit `config.toml`** and set your local directory paths (`tcp_repo_dir`, `fmriprep_output_dir`, etc.) after script finishes.
 
 ## Building
 
