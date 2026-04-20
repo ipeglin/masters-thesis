@@ -1,20 +1,27 @@
 # Flat AppConfig. All shared IO paths at top level. Stage-specific algorithm
 # params go under their [stage] table below.
 
+tcp_annex_remote = "9cee7da3-a848-4b59-b8ff-d7848f2ad864" # Git annex remote
+
+# Directories
 tcp_repo_dir = ""
 fmriprep_output_dir = ""
 parcellated_ts_dir = ""
 subject_filter_dir = ""
 task_regressors_output_dir = ""
-cortical_atlas = "/Users/ipeglin/Git/masters-thesis/atlas/400Parcels_Yeo2011_17Networks_FSLMNI152_2mm.nii.gz"
-subcortical_atlas = "/Users/ipeglin/Git/masters-thesis/atlas/Tian_Subcortex_S2_3T.nii"
-cortical_atlas_lut = "/Users/ipeglin/Git/masters-thesis/atlas/400Parcels_Yeo2011_17Networks_info.txt"
-subcortical_atlas_lut = "/Users/ipeglin/Git/masters-thesis/atlas/Tian_Subcortex_S2_3T_label.txt"
+
+# Files
 training_subjects_path = ""
 test_subjects_path = ""
 validation_subjects_path = ""
-tcp_annex_remote = ""
 
+# Atlas Files
+cortical_atlas = ""
+subcortical_atlas = ""
+cortical_atlas_lut = ""
+subcortical_atlas_lut = ""
+
+# Run params
 force = false
 dry_run = false
 
@@ -25,4 +32,4 @@ voxelwise_zscore = false
 num_modes = 10
 
 [feature_extraction]
-cnn_weights_path = "cnn_model_weights/densenet201_imagenet.pt"
+cnn_weights_path = ""
