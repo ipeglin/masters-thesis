@@ -1,22 +1,18 @@
 [workspace]
 resolver = "2"
 members = [
-  "crates/atlas",
   "crates/cli",
-  "crates/config",
-  "crates/06fc",
-  "crates/hdf5_io",
-  "crates/nifti_masker",
-  "crates/signals",
+  "crates/utils",
   "crates/00tcp_subject_selection",
   "crates/01fmri_parcellation",
   "crates/02fmri_segment_trials",
   "crates/03cwt",
   "crates/04mvmd",
   "crates/05hilbert",
+  "crates/06fc",
   "crates/07feature_extraction",
   "crates/08data_splitting",
-  # "crates/fmri_process",
+  "crates/09classification",
 ]
 
 [workspace.dependencies]

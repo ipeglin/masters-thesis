@@ -18,23 +18,38 @@ pub struct H5Attr {
 
 impl H5Attr {
     pub fn string(name: impl Into<String>, value: impl Into<String>) -> Self {
-        Self { name: name.into(), value: H5AttrValue::String(value.into()) }
+        Self {
+            name: name.into(),
+            value: H5AttrValue::String(value.into()),
+        }
     }
 
     pub fn u32(name: impl Into<String>, value: u32) -> Self {
-        Self { name: name.into(), value: H5AttrValue::U32(value) }
+        Self {
+            name: name.into(),
+            value: H5AttrValue::U32(value),
+        }
     }
 
     pub fn i32(name: impl Into<String>, value: i32) -> Self {
-        Self { name: name.into(), value: H5AttrValue::I32(value) }
+        Self {
+            name: name.into(),
+            value: H5AttrValue::I32(value),
+        }
     }
 
     pub fn f32(name: impl Into<String>, value: f32) -> Self {
-        Self { name: name.into(), value: H5AttrValue::F32(value) }
+        Self {
+            name: name.into(),
+            value: H5AttrValue::F32(value),
+        }
     }
 
     pub fn f64(name: impl Into<String>, value: f64) -> Self {
-        Self { name: name.into(), value: H5AttrValue::F64(value) }
+        Self {
+            name: name.into(),
+            value: H5AttrValue::F64(value),
+        }
     }
 }
 
@@ -53,16 +68,28 @@ pub fn write_attrs(loc: &hdf5::Location, attrs: &[H5Attr]) -> Result<()> {
                     .write_raw(&[unicode])?;
             }
             H5AttrValue::U32(v) => {
-                loc.new_attr::<u32>().shape([1]).create(attr.name.as_str())?.write_raw(&[*v])?;
+                loc.new_attr::<u32>()
+                    .shape([1])
+                    .create(attr.name.as_str())?
+                    .write_raw(&[*v])?;
             }
             H5AttrValue::I32(v) => {
-                loc.new_attr::<i32>().shape([1]).create(attr.name.as_str())?.write_raw(&[*v])?;
+                loc.new_attr::<i32>()
+                    .shape([1])
+                    .create(attr.name.as_str())?
+                    .write_raw(&[*v])?;
             }
             H5AttrValue::F32(v) => {
-                loc.new_attr::<f32>().shape([1]).create(attr.name.as_str())?.write_raw(&[*v])?;
+                loc.new_attr::<f32>()
+                    .shape([1])
+                    .create(attr.name.as_str())?
+                    .write_raw(&[*v])?;
             }
             H5AttrValue::F64(v) => {
-                loc.new_attr::<f64>().shape([1]).create(attr.name.as_str())?.write_raw(&[*v])?;
+                loc.new_attr::<f64>()
+                    .shape([1])
+                    .create(attr.name.as_str())?
+                    .write_raw(&[*v])?;
             }
         }
     }
@@ -150,18 +177,26 @@ pub fn read_attrs(loc: &hdf5::Location) -> Result<Vec<H5Attr>> {
         let desc = attr.dtype()?.to_descriptor()?;
 
         let value = match desc {
-            TypeDescriptor::Unsigned(IntSize::U4) => {
-                attr.read_raw::<u32>()?.into_iter().next().map(H5AttrValue::U32)
-            }
-            TypeDescriptor::Integer(IntSize::U4) => {
-                attr.read_raw::<i32>()?.into_iter().next().map(H5AttrValue::I32)
-            }
-            TypeDescriptor::Float(FloatSize::U4) => {
-                attr.read_raw::<f32>()?.into_iter().next().map(H5AttrValue::F32)
-            }
-            TypeDescriptor::Float(FloatSize::U8) => {
-                attr.read_raw::<f64>()?.into_iter().next().map(H5AttrValue::F64)
-            }
+            TypeDescriptor::Unsigned(IntSize::U4) => attr
+                .read_raw::<u32>()?
+                .into_iter()
+                .next()
+                .map(H5AttrValue::U32),
+            TypeDescriptor::Integer(IntSize::U4) => attr
+                .read_raw::<i32>()?
+                .into_iter()
+                .next()
+                .map(H5AttrValue::I32),
+            TypeDescriptor::Float(FloatSize::U4) => attr
+                .read_raw::<f32>()?
+                .into_iter()
+                .next()
+                .map(H5AttrValue::F32),
+            TypeDescriptor::Float(FloatSize::U8) => attr
+                .read_raw::<f64>()?
+                .into_iter()
+                .next()
+                .map(H5AttrValue::F64),
             TypeDescriptor::VarLenUnicode => attr
                 .read_raw::<hdf5::types::VarLenUnicode>()?
                 .into_iter()

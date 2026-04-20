@@ -192,11 +192,10 @@ impl BrainAtlas {
     /// Row indices for the subset of interest: vPFC (PFCv), mPFC (PFCm) cortical
     /// plus amygdala (AMY) subcortical ROIs, across both hemispheres.
     pub fn vpfc_mpfc_amy_indices(&self) -> Vec<usize> {
-        let mut idxs: Vec<usize> = self
-            .concat_row_indices(|e| match &e.metadata {
-                RoiType::Cortical { region, .. } => region == "PFCv" || region == "PFCm",
-                RoiType::Subcortical { region, .. } => region.contains("AMY"),
-            });
+        let mut idxs: Vec<usize> = self.concat_row_indices(|e| match &e.metadata {
+            RoiType::Cortical { region, .. } => region == "PFCv" || region == "PFCm",
+            RoiType::Subcortical { region, .. } => region.contains("AMY"),
+        });
         idxs.sort_unstable();
         idxs.dedup();
         idxs

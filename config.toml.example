@@ -1,19 +1,28 @@
-[tcp_subject_selection]
-tcp_dir = "/path/to/tcp"
-tcp_annex_remote = "remote_annex_id"
-output_dir = "/path/to/subject/output"
-filters = ["available_demos_filter", "available_shaps_filter"]
+# Flat AppConfig. All shared IO paths at top level. Stage-specific algorithm
+# params go under their [stage] table below.
+
+tcp_repo_dir = ""
+fmriprep_output_dir = ""
+parcellated_ts_dir = ""
+subject_filter_dir = ""
+task_regressors_output_dir = ""
+cortical_atlas = "/Users/ipeglin/Git/masters-thesis/atlas/400Parcels_Yeo2011_17Networks_FSLMNI152_2mm.nii.gz"
+subcortical_atlas = "/Users/ipeglin/Git/masters-thesis/atlas/Tian_Subcortex_S2_3T.nii"
+cortical_atlas_lut = "/Users/ipeglin/Git/masters-thesis/atlas/400Parcels_Yeo2011_17Networks_info.txt"
+subcortical_atlas_lut = "/Users/ipeglin/Git/masters-thesis/atlas/Tian_Subcortex_S2_3T_label.txt"
+training_subjects_path = ""
+test_subjects_path = ""
+validation_subjects_path = ""
+tcp_annex_remote = ""
+
+force = false
 dry_run = false
 
-[tcp_fmri_parcellation]
-fmri_dir = "/path/to/fmri"
-filter_dir = "/path/to/filter/outputs"
-output_dir = "/path/to/output"
-cortical_atlas = "path/to/cortical/atlas"
-subcortical_atlas = "path/to/subcortical/atlas"
+[parcellation]
+voxelwise_zscore = false
 
-[tcp_fmri_process]
-fmri_dir = "/path/to/files"
-output_dir = "/path/to/files"
-cortical_atlas_lut = "/path/to/file"
-subcortical_atlas_lut = "/path/to/file"
+[mvmd]
+num_modes = 10
+
+[feature_extraction]
+cnn_weights_path = "cnn_model_weights/densenet201_imagenet.pt"

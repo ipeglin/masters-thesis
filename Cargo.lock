@@ -209,10 +209,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "atlas"
-version = "0.1.0"
-
-[[package]]
 name = "atoi_simd"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -498,12 +494,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3e64b0cc0439b12df2fa678eae89a1c56a529fd067a9115f7827f1fffd22b32"
 
 [[package]]
+name = "classification"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hdf5",
+ "polars",
+ "polars-io",
+ "tracing",
+ "utils",
+]
+
+[[package]]
 name = "cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "config",
+ "classification",
  "cwt",
  "data_splitting",
  "fc",
@@ -512,9 +520,15 @@ dependencies = [
  "fmri_segment_trials",
  "hilbert",
  "mvmd",
+ "polars",
+ "serde",
+ "serde_json",
  "tcp_subject_selection",
+ "thiserror 1.0.69",
+ "toml",
  "tracing",
  "tracing-subscriber",
+ "utils",
 ]
 
 [[package]]
@@ -556,19 +570,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
 dependencies = [
  "crossbeam-utils",
-]
-
-[[package]]
-name = "config"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "polars",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "toml",
- "tracing",
 ]
 
 [[package]]
@@ -726,10 +727,8 @@ name = "cwt"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "config",
  "fastcwt",
  "hdf5",
- "hdf5_io",
  "ndarray 0.15.6",
  "num-complex",
  "scirs2-signal",
@@ -737,6 +736,7 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tracing",
+ "utils",
 ]
 
 [[package]]
@@ -744,14 +744,13 @@ name = "data_splitting"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "config",
  "hdf5",
- "hdf5_io",
  "polars",
  "polars-io",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "tracing",
+ "utils",
 ]
 
 [[package]]
@@ -889,11 +888,10 @@ name = "fc"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "config",
  "hdf5",
- "hdf5_io",
  "ndarray 0.15.6",
  "tracing",
+ "utils",
 ]
 
 [[package]]
@@ -901,12 +899,10 @@ name = "feature_extraction"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "atlas",
- "config",
  "hdf5",
- "hdf5_io",
  "tch",
  "tracing",
+ "utils",
 ]
 
 [[package]]
@@ -940,18 +936,18 @@ name = "fmri_parcellation"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "config",
  "git2",
  "hdf5",
+ "nalgebra",
  "ndarray 0.15.6",
  "nifti",
- "nifti_masker",
  "polars",
  "polars-io",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
  "tracing",
+ "utils",
 ]
 
 [[package]]
@@ -959,7 +955,6 @@ name = "fmri_segment_trials"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "config",
  "hdf5",
  "ndarray 0.15.6",
  "polars",
@@ -969,6 +964,7 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tracing",
+ "utils",
 ]
 
 [[package]]
@@ -1295,14 +1291,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hdf5_io"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "hdf5",
-]
-
-[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1325,10 +1313,8 @@ name = "hilbert"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "config",
  "fastcwt",
  "hdf5",
- "hdf5_io",
  "ndarray 0.15.6",
  "num-complex",
  "scirs2-signal",
@@ -1336,6 +1322,7 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tracing",
+ "utils",
 ]
 
 [[package]]
@@ -1875,18 +1862,17 @@ name = "mvmd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "config",
  "hdf5",
- "hdf5_io",
  "ndarray 0.15.6",
  "polars",
  "polars-io",
  "regex",
+ "rustfft",
  "serde",
  "serde_json",
- "signals",
  "thiserror 1.0.69",
  "tracing",
+ "utils",
 ]
 
 [[package]]
@@ -1993,17 +1979,6 @@ dependencies = [
  "num-traits",
  "quick-error",
  "rgb",
-]
-
-[[package]]
-name = "nifti_masker"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "nalgebra",
- "ndarray 0.15.6",
- "nifti",
- "tracing",
 ]
 
 [[package]]
@@ -3880,16 +3855,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "signals"
-version = "0.1.0"
-dependencies = [
- "ndarray 0.15.6",
- "polars",
- "rustfft",
- "tracing",
-]
-
-[[package]]
 name = "simba"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4128,7 +4093,6 @@ name = "tcp_subject_selection"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "config",
  "git2",
  "polars",
  "polars-io",
@@ -4136,6 +4100,7 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tracing",
+ "utils",
 ]
 
 [[package]]
@@ -4564,6 +4529,19 @@ name = "utf8parse"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
+
+[[package]]
+name = "utils"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hdf5",
+ "polars",
+ "polars-io",
+ "serde",
+ "thiserror 1.0.69",
+ "toml",
+]
 
 [[package]]
 name = "uuid"

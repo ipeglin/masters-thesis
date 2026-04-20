@@ -1,7 +1,9 @@
 use std::{collections::HashSet, fs, path::Path, time::Instant};
 
 use anyhow::{Context, Result};
-use config::{DataSplitConfig, bids_subject_id::BidsSubjectId, polars_csv};
+use utils::bids_subject_id::BidsSubjectId;
+use utils::config::AppConfig;
+use utils::polars_csv;
 use polars::prelude::*;
 use rand::SeedableRng;
 use rand::seq::IteratorRandom;
@@ -22,7 +24,7 @@ fn write_subject_set<P: AsRef<Path>>(path: P, subjects: &[String]) -> Result<()>
     Ok(())
 }
 
-pub fn run(cfg: &DataSplitConfig) -> Result<()> {
+pub fn run(cfg: &AppConfig) -> Result<()> {
     const TRAINING_FRAC: f64 = 0.7;
     const TESTING_FRAC: f64 = (1.0 - TRAINING_FRAC) / 2.0;
     const VALIDATION_FRAC: f64 = TESTING_FRAC;
@@ -30,13 +32,13 @@ pub fn run(cfg: &DataSplitConfig) -> Result<()> {
     let run_start = Instant::now();
 
     info!(
-        bold_ts_dir = %cfg.bold_ts_dir.display(),
+        parcellated_ts_dir = %cfg.parcellated_ts_dir.display(),
         force = cfg.force,
         "starting data splitting pipeline"
     );
 
-    let fmri_dir = &cfg.bold_ts_dir;
-    let subject_directories: HashSet<String> = fs::read_dir(fmri_dir)?
+    let fmriprep_output_dir = &cfg.parcellated_ts_dir;
+    let subject_directories: HashSet<String> = fs::read_dir(fmriprep_output_dir)?
         .filter_map(|entry_result| entry_result.ok())
         .filter_map(|entry| {
             let path = entry.path();
