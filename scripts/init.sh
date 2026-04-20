@@ -23,19 +23,23 @@ else
     SCRIPTS_DIR="$PROJECT_ROOT/scripts"
 fi
 
+source "$SCRIPTS_DIR/sys-logger.sh"
+log_title "TCP fMRI Preprocessing Setup"
+
 # --- 2. System Detection ---
 IS_IDUN=false
 if [[ "$1" == "idun" ]] || [[ -f "$PROJECT_ROOT/.sys-idun" ]]; then
     IS_IDUN=true
-    echo ">> System detected: IDUN Cluster"
+    log_info "System detected: IDUN Cluster"
 else
-    echo ">> System detected: Local Machine"
+    log_info "System detected: Local Machine"
 fi
 
 # --- 3. Initialize Config ---
+log_step "Initializing config.toml"
 CONFIG_FILE="$PROJECT_ROOT/config.toml"
 if [ ! -f "$CONFIG_FILE" ]; then
-    echo ">> Initializing config.toml..."
+    log_info "Copying config.toml.example to config.toml"
     cp "$PROJECT_ROOT/config.toml.example" "$CONFIG_FILE"
 
     if [ "$IS_IDUN" = true ]; then
@@ -45,7 +49,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
             bash "$IDUN_CFG_SCRIPT" "$CONFIG_FILE"
         fi
     else
-        echo ">> Configuring local default paths..."
+        log_info "Configuring local default paths"
         OS="$(uname -s)"
         if [[ "$OS" == "Linux"* ]]; then
             DL_DIR="$HOME/downloads/ds005237"
@@ -56,35 +60,38 @@ if [ ! -f "$CONFIG_FILE" ]; then
         rm -f "${CONFIG_FILE}.bak"
     fi
 else
-    echo ">> config.toml already exists."
+    log_info "config.toml already exists"
 fi
 
 # --- 4. Define ATLAS_DIR ---
+log_step "Configuring Atlas Directory"
 if [ "$IS_IDUN" = true ]; then
     export ATLAS_DIR="/cluster/work/$USER/atlases"
 else
     DEFAULT_LOCAL_DIR="$PROJECT_ROOT/atlases"
-    printf "Enter atlas directory [Default: %s]: " "$DEFAULT_LOCAL_DIR"
+    printf "  ${C_CYAN}ℹ${C_RESET} Enter atlas directory [Default: %s]: " "$DEFAULT_LOCAL_DIR"
     read USER_INPUT
     export ATLAS_DIR="${USER_INPUT:-$DEFAULT_LOCAL_DIR}"
 fi
-echo ">> ATLAS_DIR set to: $ATLAS_DIR"
+log_success "ATLAS_DIR set to: $ATLAS_DIR"
 
 # --- 5. Run Atlas Fetcher ---
+log_step "Fetching Brain Atlases"
 FETCH_SCRIPT="$SCRIPTS_DIR/sys-all_fetch-atlas.sh"
 if [ -f "$FETCH_SCRIPT" ]; then
     chmod +x "$FETCH_SCRIPT"
     # We pass the project root as an argument so the fetcher knows where to find config.toml
     bash "$FETCH_SCRIPT" "$PROJECT_ROOT"
 else
-    echo "!! Error: $FETCH_SCRIPT not found."
+    log_err "$FETCH_SCRIPT not found."
 fi
 
 # --- 6. HDF5 & Environment Setup ---
+log_step "Setting up Environment"
 if [ "$IS_IDUN" = true ]; then
     HDF5_INSTALL_DIR="$HOME/hdf5"
     if [ ! -f "$HDF5_INSTALL_DIR/lib/libhdf5.so" ]; then
-        echo ">> HDF5 not found. Building explicitly for IDUN..."
+        log_warn "HDF5 not found. Building explicitly for IDUN..."
         BUILD_SCRIPT="$SCRIPTS_DIR/sys-idun_build-hdf5.sh"
         if [ -f "$BUILD_SCRIPT" ]; then
             bash "$BUILD_SCRIPT"
@@ -98,11 +105,10 @@ if [ "$IS_IDUN" = true ]; then
     
     if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         echo ""
-        echo "!! WARNING: SCRIPT NOT SOURCED !!"
-        echo "Because you ran this with 'bash' instead of 'source', the Rust/CUDA"
-        echo "modules and IDUN environment variables will NOT persist in your terminal."
-        echo "To apply them to your current session, run:"
-        echo "    source $ENV_SCRIPT"
+        log_err "SCRIPT NOT SOURCED"
+        log_warn "Because you ran this with 'bash' instead of 'source', the Rust/CUDA"
+        log_warn "modules and IDUN environment variables will NOT persist in your terminal."
+        log_warn "To apply them to your current session, run: \n    source $ENV_SCRIPT"
         echo ""
     fi
 else
@@ -113,9 +119,9 @@ else
         bash "$DEPS_SCRIPT"
     else
         if ! command -v h5cc >/dev/null 2>&1; then
-            echo "!! Warning: HDF5 (h5cc) not found. You may need to install it manually."
+            log_warn "HDF5 (h5cc) not found. You may need to install it manually."
         fi
     fi
 fi
 
-echo "--- Initialization Complete ---"
+log_title "Initialization Complete"

@@ -1,4 +1,6 @@
 #!/bin/bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/sys-logger.sh"
 
 # Use the first argument as PROJECT_ROOT, or assume parent dir if run manually from /scripts
 PROJECT_ROOT="${1:-$(dirname "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)")}"
@@ -7,7 +9,7 @@ CONFIG_PATH="$PROJECT_ROOT/config.toml"
 # Use exported ATLAS_DIR or default to a folder in project root
 ATLAS_DIR="${ATLAS_DIR:-$PROJECT_ROOT/atlases}"
 
-echo "Starting download to $ATLAS_DIR..."
+log_info "Target directory: $ATLAS_DIR"
 mkdir -p "$ATLAS_DIR"
 
 KEYS=("cortical_atlas" "cortical_atlas_lut" "subcortical_atlas" "subcortical_atlas_lut")
@@ -24,20 +26,21 @@ for key in "${KEYS[@]}"; do
     DEST="$ATLAS_DIR/$FILENAME"
     
     if [ ! -f "$DEST" ]; then
-        echo "Downloading $FILENAME..."
-        curl -L "$URL" -o "$DEST"
+        log_info "Downloading $FILENAME..."
+        curl -s -L "$URL" -o "$DEST"
+        log_success "Downloaded $FILENAME"
     else
-        echo "$FILENAME already exists. Skip download."
+        log_info "$FILENAME already exists. Skip download."
     fi
 
     if [ -f "$CONFIG_PATH" ]; then
         ABS_PATH=$(realpath "$DEST")
-        echo "Updating $key in config.toml..."
+        log_info "Updating $key in config.toml"
         sed -i.bak "s|^$key = .*|$key = \"$ABS_PATH\"|g" "$CONFIG_PATH"
         rm -f "${CONFIG_PATH}.bak"
     else
-        echo "Warning: $CONFIG_PATH not found."
+        log_warn "$CONFIG_PATH not found."
     fi
 done
 
-echo "Atlas fetching complete."
+log_success "Atlas fetching complete."
