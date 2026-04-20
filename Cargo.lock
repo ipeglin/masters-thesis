@@ -731,6 +731,7 @@ dependencies = [
  "hdf5",
  "ndarray 0.15.6",
  "num-complex",
+ "rayon",
  "scirs2-signal",
  "serde",
  "serde_json",
@@ -943,6 +944,7 @@ dependencies = [
  "nifti",
  "polars",
  "polars-io",
+ "rayon",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -1866,6 +1868,7 @@ dependencies = [
  "ndarray 0.15.6",
  "polars",
  "polars-io",
+ "rayon",
  "regex",
  "rustfft",
  "serde",
@@ -1915,6 +1918,7 @@ dependencies = [
  "num-integer",
  "num-traits",
  "rawpointer",
+ "rayon",
 ]
 
 [[package]]
