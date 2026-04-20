@@ -22,18 +22,31 @@ Execution order (crates 00-09):
 ## Prerequisites
 Rust 1.82.0+. Git-annex for large data. HDF5 for timeseries.
 
-## IDUN Cluster Setup
+## Setup & Initialization
 
-Remote IDUN needs environment prep before run. Source script to load modules, paths, build HDF5 if absent.
+Run main initialization script to prepare paths, atlases, and system environment.
 
 ```bash
-source setup_env.sh
+bash scripts/init.sh
 ```
 
-**Cluster Paths logic:**
-- Data & large files (`.nii`, `.pt`, `fmriprep_output_dir`): `/cluster/work/{username}/`
-- Repos: `/cluster/home/{username}/`
-- fMRIPrep files: `/cluster/projects/itea_lille-ie/Transdiagnostic/output/fmriprep-25.1.4`
+### IDUN Cluster Setup
+
+IDUN needs specific modules and environment prep. The `init.sh` script handles this if it detects IDUN. Trigger cluster mode by passing `idun` argument OR creating `.sys-idun` file.
+
+```bash
+# Option 1: Pass idun argument
+bash scripts/init.sh idun
+
+# Option 2: Empty trigger file
+touch .sys-idun
+bash scripts/init.sh
+```
+This auto-loads IDUN specific config defaults, builds HDF5 (if missing), and sources `sys-idun_env.sh` (module load Rust/CUDA).
+
+### Local Machine Setup
+
+**CRITICAL:** Run `init.sh` on local (Mac/Windows/Linux). It copies `config.toml` and fetches atlases. But **you MUST manually edit `config.toml`** and set your local directory paths (`tcp_repo_dir`, `fmriprep_output_dir`, etc.) after script finishes.
 
 ## Building
 
@@ -50,12 +63,12 @@ cargo run --release -p cli -- tcp-select-subjects
 
 ## Configuration
 
-Copy example config. Set paths for platform.
+For local machines, copy example config if `init.sh` didn't. Set paths for platform manually.
 
 ```bash
 cp config.toml.example config.toml
 ```
 
-Use `tcp_repo_dir` = `/cluster/home/{username}/masters-thesis`
-Use `fmriprep_output_dir` = `/cluster/projects/itea_lille-ie/Transdiagnostic/output/fmriprep-25.1.4`
-Use output dirs in `/cluster/work/{username}/...`
+Example local paths:
+- `tcp_repo_dir` = `/Users/ipeglin/data/ds005237`
+- `fmriprep_output_dir` = `/Users/ipeglin/data/fmriprep`
