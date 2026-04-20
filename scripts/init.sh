@@ -89,13 +89,12 @@ log_step "Fetching CNN Weights"
 if [ "$IS_IDUN" = true ]; then
     WEIGHTS_DIR="/cluster/work/$USER/cnn_weights"
 else
-    OS="$(uname -s)"
-    if [[ "$OS" == "Linux"* ]]; then
-        WEIGHTS_DIR="$HOME/downloads/cnn_weights"
-    else
-        WEIGHTS_DIR="$HOME/Downloads/cnn_weights"
-    fi
+    DEFAULT_WEIGHTS_DIR="$PROJECT_ROOT/cnn_model_weights"
+    printf "  ${C_CYAN}ℹ${C_RESET} Enter CNN weights directory [Default: %s]: " "$DEFAULT_WEIGHTS_DIR"
+    read USER_INPUT
+    WEIGHTS_DIR="${USER_INPUT:-$DEFAULT_WEIGHTS_DIR}"
 fi
+log_success "WEIGHTS_DIR set to: $WEIGHTS_DIR"
 
 FETCH_WEIGHTS="$SCRIPTS_DIR/sys-all_fetch-weights.sh"
 if [ -f "$FETCH_WEIGHTS" ]; then
