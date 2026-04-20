@@ -1,6 +1,8 @@
 use anyhow::Result;
-use config::{bids_filename::BidsFilename, bids_subject_id::BidsSubjectId, pipeline_config::CwtConfig};
-use hdf5_io::{open_or_create, open_or_create_group, write_dataset};
+use utils::bids_filename::BidsFilename;
+use utils::bids_subject_id::BidsSubjectId;
+use utils::config::AppConfig;
+use utils::hdf5_io::{open_or_create, open_or_create_group, write_dataset};
 use ndarray::{Array2, Axis, concatenate};
 use std::{collections::BTreeMap, fs, path::PathBuf, time::Instant};
 use tracing::{debug, info, warn};
@@ -75,7 +77,7 @@ fn cwt_scalogram(signal: &Array2<f64>) -> (Vec<f64>, [usize; 3]) {
     (flat, [n_channels, n_scales, n_timepoints])
 }
 
-pub fn run(cfg: &CwtConfig) -> Result<()> {
+pub fn run(cfg: &AppConfig) -> Result<()> {
     let run_start = Instant::now();
 
     // Disable HDF5 advisory file locking — required on macOS and some networked filesystems
@@ -83,7 +85,7 @@ pub fn run(cfg: &CwtConfig) -> Result<()> {
     unsafe { std::env::set_var("HDF5_USE_FILE_LOCKING", "FALSE") };
 
     info!(
-        bold_ts_dir = %cfg.bold_ts_dir.display(),
+        parcellated_ts_dir = %cfg.parcellated_ts_dir.display(),
         force = cfg.force,
         "starting fMRI CWT pipeline"
     );
@@ -92,7 +94,7 @@ pub fn run(cfg: &CwtConfig) -> Result<()> {
     // Get Time Series //
     /////////////////////
 
-    let subjects: BTreeMap<String, PathBuf> = fs::read_dir(&cfg.bold_ts_dir)?
+    let subjects: BTreeMap<String, PathBuf> = fs::read_dir(&cfg.parcellated_ts_dir)?
         .filter_map(|entry_result| entry_result.ok())
         .filter_map(|entry| {
             let path = entry.path();
@@ -134,405 +136,423 @@ pub fn run(cfg: &CwtConfig) -> Result<()> {
 
         for file_path in &available_timeseries {
             let file_result: anyhow::Result<()> = (|| {
-            let bids = BidsFilename::parse(match file_path.file_name().and_then(|n| n.to_str()) {
-                Some(name) => name,
-                None => return Ok(()),
-            });
-            let task_name = bids.get("task").unwrap_or("unknown");
+                let bids =
+                    BidsFilename::parse(match file_path.file_name().and_then(|n| n.to_str()) {
+                        Some(name) => name,
+                        None => return Ok(()),
+                    });
+                let task_name = bids.get("task").unwrap_or("unknown");
 
-            let h5_file = open_or_create(&file_path)?;
-            let cwt_group = open_or_create_group(&h5_file, "cwt", false)?;
+                let h5_file = open_or_create(&file_path)?;
+                let cwt_group = open_or_create_group(&h5_file, "cwt", false)?;
 
-            //////////////////////////////////////////////
-            // Whole-band — raw (tcp_timeseries_raw)   //
-            //////////////////////////////////////////////
+                //////////////////////////////////////////////
+                // Whole-band — raw (tcp_timeseries_raw)   //
+                //////////////////////////////////////////////
 
-            let wb_raw_done = !cfg.force && cwt_group.group("whole-band").is_ok();
-            if wb_raw_done {
-                info!(
-                    subject = formatted_id,
-                    subject_idx = subject_idx,
-                    total_subjects = total_subjects,
-                    task_name = task_name,
-                    "whole-band raw scalogram already computed, skipping (use --force to recompute)"
-                );
-            } else {
-                let dataset = h5_file.dataset("tcp_timeseries_raw")?;
-                let data_f32: Array2<f32> = dataset.read_2d()?;
-                let [n_channels, n_timepoints] = match data_f32.shape() {
-                    &[r, c] => [r, c],
-                    _ => anyhow::bail!("expected 2D timeseries, got shape {:?}", data_f32.shape()),
-                };
-                let data_f64 = data_f32.mapv(|val| val as f64);
-
-                info!(
-                    subject = formatted_id,
-                    subject_idx = subject_idx,
-                    total_subjects = total_subjects,
-                    task_name = task_name,
-                    n_channels = n_channels,
-                    n_timepoints = n_timepoints,
-                    "starting whole-band raw scalogram"
-                );
-
-                let cwt_start = Instant::now();
-                let (scalogram_data, shape) = cwt_scalogram(&data_f64);
-                let cwt_duration_ms = cwt_start.elapsed().as_millis();
-
-                let write_start = Instant::now();
-                let wb_group = open_or_create_group(&cwt_group, "whole-band", cfg.force)?;
-                write_dataset(&wb_group, "scalogram", &scalogram_data, &shape, None)?;
-                let write_duration_ms = write_start.elapsed().as_millis();
-
-                info!(
-                    subject = formatted_id,
-                    subject_idx = subject_idx,
-                    total_subjects = total_subjects,
-                    task_name = task_name,
-                    n_channels = n_channels,
-                    n_timepoints = n_timepoints,
-                    output_shape = ?shape,
-                    cwt_duration_ms = cwt_duration_ms,
-                    write_duration_ms = write_duration_ms,
-                    output_file = %file_path.display(),
-                    "whole-band raw scalogram complete"
-                );
-            }
-
-            ////////////////////////////////////////////////////
-            // Whole-band — standardized (tcp_timeseries_std) //
-            ////////////////////////////////////////////////////
-
-            match h5_file.dataset("tcp_timeseries_standardized") {
-                Err(_) => {
-                    debug!(
+                let wb_raw_done = !cfg.force && cwt_group.group("whole-band").is_ok();
+                if wb_raw_done {
+                    info!(
                         subject = formatted_id,
+                        subject_idx = subject_idx,
+                        total_subjects = total_subjects,
                         task_name = task_name,
-                        "no tcp_timeseries_standardized found, skipping standardized whole-band scalogram"
+                        "whole-band raw scalogram already computed, skipping (use --force to recompute)"
+                    );
+                } else {
+                    let dataset = h5_file.dataset("tcp_timeseries_raw")?;
+                    let data_f32: Array2<f32> = dataset.read_2d()?;
+                    let [n_channels, n_timepoints] = match data_f32.shape() {
+                        &[r, c] => [r, c],
+                        _ => anyhow::bail!(
+                            "expected 2D timeseries, got shape {:?}",
+                            data_f32.shape()
+                        ),
+                    };
+                    let data_f64 = data_f32.mapv(|val| val as f64);
+
+                    info!(
+                        subject = formatted_id,
+                        subject_idx = subject_idx,
+                        total_subjects = total_subjects,
+                        task_name = task_name,
+                        n_channels = n_channels,
+                        n_timepoints = n_timepoints,
+                        "starting whole-band raw scalogram"
+                    );
+
+                    let cwt_start = Instant::now();
+                    let (scalogram_data, shape) = cwt_scalogram(&data_f64);
+                    let cwt_duration_ms = cwt_start.elapsed().as_millis();
+
+                    let write_start = Instant::now();
+                    let wb_group = open_or_create_group(&cwt_group, "whole-band", cfg.force)?;
+                    write_dataset(&wb_group, "scalogram", &scalogram_data, &shape, None)?;
+                    let write_duration_ms = write_start.elapsed().as_millis();
+
+                    info!(
+                        subject = formatted_id,
+                        subject_idx = subject_idx,
+                        total_subjects = total_subjects,
+                        task_name = task_name,
+                        n_channels = n_channels,
+                        n_timepoints = n_timepoints,
+                        output_shape = ?shape,
+                        cwt_duration_ms = cwt_duration_ms,
+                        write_duration_ms = write_duration_ms,
+                        output_file = %file_path.display(),
+                        "whole-band raw scalogram complete"
                     );
                 }
-                Ok(std_dataset) => {
-                    let cwt_std_group = open_or_create_group(&h5_file, "cwt_standardized", false)?;
-                    let wb_std_done = !cfg.force && cwt_std_group.group("whole-band").is_ok();
 
-                    if wb_std_done {
-                        info!(
-                            subject = formatted_id,
-                            subject_idx = subject_idx,
-                            total_subjects = total_subjects,
-                            task_name = task_name,
-                            "whole-band standardized scalogram already computed, skipping (use --force to recompute)"
-                        );
-                    } else {
-                        let data_f32: Array2<f32> = std_dataset.read_2d()?;
-                        let [n_channels, n_timepoints] = match data_f32.shape() {
-                            &[r, c] => [r, c],
-                            _ => anyhow::bail!(
-                                "expected 2D standardized timeseries, got shape {:?}",
-                                data_f32.shape()
-                            ),
-                        };
-                        let data_f64 = data_f32.mapv(|val| val as f64);
+                ////////////////////////////////////////////////////
+                // Whole-band — standardized (tcp_timeseries_std) //
+                ////////////////////////////////////////////////////
 
-                        info!(
-                            subject = formatted_id,
-                            subject_idx = subject_idx,
-                            total_subjects = total_subjects,
-                            task_name = task_name,
-                            n_channels = n_channels,
-                            n_timepoints = n_timepoints,
-                            "starting whole-band standardized scalogram"
-                        );
-
-                        let cwt_start = Instant::now();
-                        let (scalogram_data, shape) = cwt_scalogram(&data_f64);
-                        let cwt_duration_ms = cwt_start.elapsed().as_millis();
-
-                        let write_start = Instant::now();
-                        let wb_std_group =
-                            open_or_create_group(&cwt_std_group, "whole-band", cfg.force)?;
-                        write_dataset(&wb_std_group, "scalogram", &scalogram_data, &shape, None)?;
-                        let write_duration_ms = write_start.elapsed().as_millis();
-
-                        info!(
-                            subject = formatted_id,
-                            subject_idx = subject_idx,
-                            total_subjects = total_subjects,
-                            task_name = task_name,
-                            n_channels = n_channels,
-                            n_timepoints = n_timepoints,
-                            output_shape = ?shape,
-                            cwt_duration_ms = cwt_duration_ms,
-                            write_duration_ms = write_duration_ms,
-                            output_file = %file_path.display(),
-                            "whole-band standardized scalogram complete"
-                        );
-                    }
-                }
-            }
-
-            ///////////////////////////////////////////
-            // Block-level — raw (blocks group)      //
-            ///////////////////////////////////////////
-
-            match h5_file.group("blocks") {
-                Err(_) => {
-                    debug!(
-                        subject = formatted_id,
-                        task_name = task_name,
-                        "no blocks group found, skipping raw block scalograms"
-                    );
-                }
-                Ok(blocks_group) => {
-                    let block_names: Vec<String> = blocks_group
-                        .member_names()?
-                        .into_iter()
-                        .filter(|n| n.starts_with("block_"))
-                        .collect();
-
-                    if block_names.is_empty() {
+                match h5_file.dataset("tcp_timeseries_standardized") {
+                    Err(_) => {
                         debug!(
                             subject = formatted_id,
                             task_name = task_name,
-                            "blocks group is empty, skipping raw block scalograms"
-                        );
-                    } else {
-                        info!(
-                            subject = formatted_id,
-                            subject_idx = subject_idx,
-                            total_subjects = total_subjects,
-                            task_name = task_name,
-                            num_blocks = block_names.len(),
-                            "starting raw block scalograms"
-                        );
-
-                        let cwt_blocks_group =
-                            open_or_create_group(&cwt_group, "blocks", cfg.force)?;
-
-                        for (block_idx, block_name) in block_names.iter().enumerate() {
-                            if !cfg.force && cwt_blocks_group.group(block_name).is_ok() {
-                                debug!(
-                                    subject = formatted_id,
-                                    task_name = task_name,
-                                    block = block_name,
-                                    block_idx = block_idx,
-                                    num_blocks = block_names.len(),
-                                    "raw block scalogram already computed, skipping (use --force to recompute)"
-                                );
-                                continue;
-                            }
-
-                            let block_group = blocks_group.group(block_name)?;
-                            let cortical: Array2<f32> =
-                                block_group.dataset("cortical_raw")?.read_2d()?;
-                            let subcortical: Array2<f32> =
-                                block_group.dataset("subcortical_raw")?.read_2d()?;
-                            let block_signal_f32 =
-                                concatenate(Axis(0), &[cortical.view(), subcortical.view()])?;
-                            let [block_channels, block_timepoints] = match block_signal_f32.shape()
-                            {
-                                &[r, c] => [r, c],
-                                _ => {
-                                    error_count += 1;
-                                    warn!(
-                                        subject = formatted_id,
-                                        task_name = task_name,
-                                        block = block_name,
-                                        block_idx = block_idx,
-                                        num_blocks = block_names.len(),
-                                        reason = "unexpected_block_shape",
-                                        shape = ?block_signal_f32.shape(),
-                                        "skipping raw block scalogram due to unexpected signal shape"
-                                    );
-                                    continue;
-                                }
-                            };
-                            let block_signal_f64 = block_signal_f32.mapv(|val| val as f64);
-
-                            info!(
-                                subject = formatted_id,
-                                task_name = task_name,
-                                block = block_name,
-                                block_idx = block_idx,
-                                num_blocks = block_names.len(),
-                                n_channels = block_channels,
-                                n_timepoints = block_timepoints,
-                                "starting raw block scalogram"
-                            );
-
-                            let block_cwt_start = Instant::now();
-                            let (scalogram_data, shape) = cwt_scalogram(&block_signal_f64);
-                            let block_cwt_duration_ms = block_cwt_start.elapsed().as_millis();
-
-                            let block_write_start = Instant::now();
-                            let cwt_block_group =
-                                open_or_create_group(&cwt_blocks_group, block_name, cfg.force)?;
-                            write_dataset(
-                                &cwt_block_group,
-                                "scalogram",
-                                &scalogram_data,
-                                &shape,
-                                None,
-                            )?;
-                            let block_write_duration_ms = block_write_start.elapsed().as_millis();
-
-                            info!(
-                                subject = formatted_id,
-                                task_name = task_name,
-                                block = block_name,
-                                block_idx = block_idx,
-                                num_blocks = block_names.len(),
-                                n_channels = block_channels,
-                                n_timepoints = block_timepoints,
-                                output_shape = ?shape,
-                                cwt_duration_ms = block_cwt_duration_ms,
-                                write_duration_ms = block_write_duration_ms,
-                                "raw block scalogram complete"
-                            );
-                        }
-
-                        info!(
-                            subject = formatted_id,
-                            task_name = task_name,
-                            num_blocks = block_names.len(),
-                            "finished all raw block scalograms"
+                            "no tcp_timeseries_standardized found, skipping standardized whole-band scalogram"
                         );
                     }
-                }
-            }
-
-            ///////////////////////////////////////////////////////////
-            // Block-level — standardized (blocks_standardized group) //
-            ///////////////////////////////////////////////////////////
-
-            match h5_file.group("blocks_standardized") {
-                Err(_) => {
-                    debug!(
-                        subject = formatted_id,
-                        task_name = task_name,
-                        "no blocks_standardized group found, skipping standardized block scalograms"
-                    );
-                }
-                Ok(blocks_std_group) => {
-                    let block_names: Vec<String> = blocks_std_group
-                        .member_names()?
-                        .into_iter()
-                        .filter(|n| n.starts_with("block_"))
-                        .collect();
-
-                    if block_names.is_empty() {
-                        debug!(
-                            subject = formatted_id,
-                            task_name = task_name,
-                            "blocks_standardized group is empty, skipping standardized block scalograms"
-                        );
-                    } else {
-                        info!(
-                            subject = formatted_id,
-                            subject_idx = subject_idx,
-                            total_subjects = total_subjects,
-                            task_name = task_name,
-                            num_blocks = block_names.len(),
-                            "starting standardized block scalograms"
-                        );
-
+                    Ok(std_dataset) => {
                         let cwt_std_group =
                             open_or_create_group(&h5_file, "cwt_standardized", false)?;
-                        let cwt_std_blocks_group =
-                            open_or_create_group(&cwt_std_group, "blocks", cfg.force)?;
+                        let wb_std_done = !cfg.force && cwt_std_group.group("whole-band").is_ok();
 
-                        for (block_idx, block_name) in block_names.iter().enumerate() {
-                            if !cfg.force && cwt_std_blocks_group.group(block_name).is_ok() {
-                                debug!(
-                                    subject = formatted_id,
-                                    task_name = task_name,
-                                    block = block_name,
-                                    block_idx = block_idx,
-                                    num_blocks = block_names.len(),
-                                    "standardized block scalogram already computed, skipping (use --force to recompute)"
-                                );
-                                continue;
-                            }
-
-                            let block_group = blocks_std_group.group(block_name)?;
-                            let cortical: Array2<f32> =
-                                block_group.dataset("cortical_standardized")?.read_2d()?;
-                            let subcortical: Array2<f32> =
-                                block_group.dataset("subcortical_standardized")?.read_2d()?;
-                            let block_signal_f32 =
-                                concatenate(Axis(0), &[cortical.view(), subcortical.view()])?;
-                            let [block_channels, block_timepoints] = match block_signal_f32.shape()
-                            {
+                        if wb_std_done {
+                            info!(
+                                subject = formatted_id,
+                                subject_idx = subject_idx,
+                                total_subjects = total_subjects,
+                                task_name = task_name,
+                                "whole-band standardized scalogram already computed, skipping (use --force to recompute)"
+                            );
+                        } else {
+                            let data_f32: Array2<f32> = std_dataset.read_2d()?;
+                            let [n_channels, n_timepoints] = match data_f32.shape() {
                                 &[r, c] => [r, c],
-                                _ => {
-                                    error_count += 1;
-                                    warn!(
-                                        subject = formatted_id,
-                                        task_name = task_name,
-                                        block = block_name,
-                                        block_idx = block_idx,
-                                        num_blocks = block_names.len(),
-                                        reason = "unexpected_block_shape",
-                                        shape = ?block_signal_f32.shape(),
-                                        "skipping standardized block scalogram due to unexpected signal shape"
-                                    );
-                                    continue;
-                                }
+                                _ => anyhow::bail!(
+                                    "expected 2D standardized timeseries, got shape {:?}",
+                                    data_f32.shape()
+                                ),
                             };
-                            let block_signal_f64 = block_signal_f32.mapv(|val| val as f64);
+                            let data_f64 = data_f32.mapv(|val| val as f64);
 
                             info!(
                                 subject = formatted_id,
+                                subject_idx = subject_idx,
+                                total_subjects = total_subjects,
                                 task_name = task_name,
-                                block = block_name,
-                                block_idx = block_idx,
-                                num_blocks = block_names.len(),
-                                n_channels = block_channels,
-                                n_timepoints = block_timepoints,
-                                "starting standardized block scalogram"
+                                n_channels = n_channels,
+                                n_timepoints = n_timepoints,
+                                "starting whole-band standardized scalogram"
                             );
 
-                            let block_cwt_start = Instant::now();
-                            let (scalogram_data, shape) = cwt_scalogram(&block_signal_f64);
-                            let block_cwt_duration_ms = block_cwt_start.elapsed().as_millis();
+                            let cwt_start = Instant::now();
+                            let (scalogram_data, shape) = cwt_scalogram(&data_f64);
+                            let cwt_duration_ms = cwt_start.elapsed().as_millis();
 
-                            let block_write_start = Instant::now();
-                            let cwt_std_block_group =
-                                open_or_create_group(&cwt_std_blocks_group, block_name, cfg.force)?;
+                            let write_start = Instant::now();
+                            let wb_std_group =
+                                open_or_create_group(&cwt_std_group, "whole-band", cfg.force)?;
                             write_dataset(
-                                &cwt_std_block_group,
+                                &wb_std_group,
                                 "scalogram",
                                 &scalogram_data,
                                 &shape,
                                 None,
                             )?;
-                            let block_write_duration_ms = block_write_start.elapsed().as_millis();
+                            let write_duration_ms = write_start.elapsed().as_millis();
+
+                            info!(
+                                subject = formatted_id,
+                                subject_idx = subject_idx,
+                                total_subjects = total_subjects,
+                                task_name = task_name,
+                                n_channels = n_channels,
+                                n_timepoints = n_timepoints,
+                                output_shape = ?shape,
+                                cwt_duration_ms = cwt_duration_ms,
+                                write_duration_ms = write_duration_ms,
+                                output_file = %file_path.display(),
+                                "whole-band standardized scalogram complete"
+                            );
+                        }
+                    }
+                }
+
+                ///////////////////////////////////////////
+                // Block-level — raw (blocks group)      //
+                ///////////////////////////////////////////
+
+                match h5_file.group("blocks") {
+                    Err(_) => {
+                        debug!(
+                            subject = formatted_id,
+                            task_name = task_name,
+                            "no blocks group found, skipping raw block scalograms"
+                        );
+                    }
+                    Ok(blocks_group) => {
+                        let block_names: Vec<String> = blocks_group
+                            .member_names()?
+                            .into_iter()
+                            .filter(|n| n.starts_with("block_"))
+                            .collect();
+
+                        if block_names.is_empty() {
+                            debug!(
+                                subject = formatted_id,
+                                task_name = task_name,
+                                "blocks group is empty, skipping raw block scalograms"
+                            );
+                        } else {
+                            info!(
+                                subject = formatted_id,
+                                subject_idx = subject_idx,
+                                total_subjects = total_subjects,
+                                task_name = task_name,
+                                num_blocks = block_names.len(),
+                                "starting raw block scalograms"
+                            );
+
+                            let cwt_blocks_group =
+                                open_or_create_group(&cwt_group, "blocks", cfg.force)?;
+
+                            for (block_idx, block_name) in block_names.iter().enumerate() {
+                                if !cfg.force && cwt_blocks_group.group(block_name).is_ok() {
+                                    debug!(
+                                        subject = formatted_id,
+                                        task_name = task_name,
+                                        block = block_name,
+                                        block_idx = block_idx,
+                                        num_blocks = block_names.len(),
+                                        "raw block scalogram already computed, skipping (use --force to recompute)"
+                                    );
+                                    continue;
+                                }
+
+                                let block_group = blocks_group.group(block_name)?;
+                                let cortical: Array2<f32> =
+                                    block_group.dataset("cortical_raw")?.read_2d()?;
+                                let subcortical: Array2<f32> =
+                                    block_group.dataset("subcortical_raw")?.read_2d()?;
+                                let block_signal_f32 =
+                                    concatenate(Axis(0), &[cortical.view(), subcortical.view()])?;
+                                let [block_channels, block_timepoints] = match block_signal_f32
+                                    .shape()
+                                {
+                                    &[r, c] => [r, c],
+                                    _ => {
+                                        error_count += 1;
+                                        warn!(
+                                            subject = formatted_id,
+                                            task_name = task_name,
+                                            block = block_name,
+                                            block_idx = block_idx,
+                                            num_blocks = block_names.len(),
+                                            reason = "unexpected_block_shape",
+                                            shape = ?block_signal_f32.shape(),
+                                            "skipping raw block scalogram due to unexpected signal shape"
+                                        );
+                                        continue;
+                                    }
+                                };
+                                let block_signal_f64 = block_signal_f32.mapv(|val| val as f64);
+
+                                info!(
+                                    subject = formatted_id,
+                                    task_name = task_name,
+                                    block = block_name,
+                                    block_idx = block_idx,
+                                    num_blocks = block_names.len(),
+                                    n_channels = block_channels,
+                                    n_timepoints = block_timepoints,
+                                    "starting raw block scalogram"
+                                );
+
+                                let block_cwt_start = Instant::now();
+                                let (scalogram_data, shape) = cwt_scalogram(&block_signal_f64);
+                                let block_cwt_duration_ms = block_cwt_start.elapsed().as_millis();
+
+                                let block_write_start = Instant::now();
+                                let cwt_block_group =
+                                    open_or_create_group(&cwt_blocks_group, block_name, cfg.force)?;
+                                write_dataset(
+                                    &cwt_block_group,
+                                    "scalogram",
+                                    &scalogram_data,
+                                    &shape,
+                                    None,
+                                )?;
+                                let block_write_duration_ms =
+                                    block_write_start.elapsed().as_millis();
+
+                                info!(
+                                    subject = formatted_id,
+                                    task_name = task_name,
+                                    block = block_name,
+                                    block_idx = block_idx,
+                                    num_blocks = block_names.len(),
+                                    n_channels = block_channels,
+                                    n_timepoints = block_timepoints,
+                                    output_shape = ?shape,
+                                    cwt_duration_ms = block_cwt_duration_ms,
+                                    write_duration_ms = block_write_duration_ms,
+                                    "raw block scalogram complete"
+                                );
+                            }
 
                             info!(
                                 subject = formatted_id,
                                 task_name = task_name,
-                                block = block_name,
-                                block_idx = block_idx,
                                 num_blocks = block_names.len(),
-                                n_channels = block_channels,
-                                n_timepoints = block_timepoints,
-                                output_shape = ?shape,
-                                cwt_duration_ms = block_cwt_duration_ms,
-                                write_duration_ms = block_write_duration_ms,
-                                "standardized block scalogram complete"
+                                "finished all raw block scalograms"
                             );
                         }
-
-                        info!(
-                            subject = formatted_id,
-                            task_name = task_name,
-                            num_blocks = block_names.len(),
-                            "finished all standardized block scalograms"
-                        );
                     }
                 }
-            }
-            Ok(())
+
+                ///////////////////////////////////////////////////////////
+                // Block-level — standardized (blocks_standardized group) //
+                ///////////////////////////////////////////////////////////
+
+                match h5_file.group("blocks_standardized") {
+                    Err(_) => {
+                        debug!(
+                            subject = formatted_id,
+                            task_name = task_name,
+                            "no blocks_standardized group found, skipping standardized block scalograms"
+                        );
+                    }
+                    Ok(blocks_std_group) => {
+                        let block_names: Vec<String> = blocks_std_group
+                            .member_names()?
+                            .into_iter()
+                            .filter(|n| n.starts_with("block_"))
+                            .collect();
+
+                        if block_names.is_empty() {
+                            debug!(
+                                subject = formatted_id,
+                                task_name = task_name,
+                                "blocks_standardized group is empty, skipping standardized block scalograms"
+                            );
+                        } else {
+                            info!(
+                                subject = formatted_id,
+                                subject_idx = subject_idx,
+                                total_subjects = total_subjects,
+                                task_name = task_name,
+                                num_blocks = block_names.len(),
+                                "starting standardized block scalograms"
+                            );
+
+                            let cwt_std_group =
+                                open_or_create_group(&h5_file, "cwt_standardized", false)?;
+                            let cwt_std_blocks_group =
+                                open_or_create_group(&cwt_std_group, "blocks", cfg.force)?;
+
+                            for (block_idx, block_name) in block_names.iter().enumerate() {
+                                if !cfg.force && cwt_std_blocks_group.group(block_name).is_ok() {
+                                    debug!(
+                                        subject = formatted_id,
+                                        task_name = task_name,
+                                        block = block_name,
+                                        block_idx = block_idx,
+                                        num_blocks = block_names.len(),
+                                        "standardized block scalogram already computed, skipping (use --force to recompute)"
+                                    );
+                                    continue;
+                                }
+
+                                let block_group = blocks_std_group.group(block_name)?;
+                                let cortical: Array2<f32> =
+                                    block_group.dataset("cortical_standardized")?.read_2d()?;
+                                let subcortical: Array2<f32> =
+                                    block_group.dataset("subcortical_standardized")?.read_2d()?;
+                                let block_signal_f32 =
+                                    concatenate(Axis(0), &[cortical.view(), subcortical.view()])?;
+                                let [block_channels, block_timepoints] = match block_signal_f32
+                                    .shape()
+                                {
+                                    &[r, c] => [r, c],
+                                    _ => {
+                                        error_count += 1;
+                                        warn!(
+                                            subject = formatted_id,
+                                            task_name = task_name,
+                                            block = block_name,
+                                            block_idx = block_idx,
+                                            num_blocks = block_names.len(),
+                                            reason = "unexpected_block_shape",
+                                            shape = ?block_signal_f32.shape(),
+                                            "skipping standardized block scalogram due to unexpected signal shape"
+                                        );
+                                        continue;
+                                    }
+                                };
+                                let block_signal_f64 = block_signal_f32.mapv(|val| val as f64);
+
+                                info!(
+                                    subject = formatted_id,
+                                    task_name = task_name,
+                                    block = block_name,
+                                    block_idx = block_idx,
+                                    num_blocks = block_names.len(),
+                                    n_channels = block_channels,
+                                    n_timepoints = block_timepoints,
+                                    "starting standardized block scalogram"
+                                );
+
+                                let block_cwt_start = Instant::now();
+                                let (scalogram_data, shape) = cwt_scalogram(&block_signal_f64);
+                                let block_cwt_duration_ms = block_cwt_start.elapsed().as_millis();
+
+                                let block_write_start = Instant::now();
+                                let cwt_std_block_group = open_or_create_group(
+                                    &cwt_std_blocks_group,
+                                    block_name,
+                                    cfg.force,
+                                )?;
+                                write_dataset(
+                                    &cwt_std_block_group,
+                                    "scalogram",
+                                    &scalogram_data,
+                                    &shape,
+                                    None,
+                                )?;
+                                let block_write_duration_ms =
+                                    block_write_start.elapsed().as_millis();
+
+                                info!(
+                                    subject = formatted_id,
+                                    task_name = task_name,
+                                    block = block_name,
+                                    block_idx = block_idx,
+                                    num_blocks = block_names.len(),
+                                    n_channels = block_channels,
+                                    n_timepoints = block_timepoints,
+                                    output_shape = ?shape,
+                                    cwt_duration_ms = block_cwt_duration_ms,
+                                    write_duration_ms = block_write_duration_ms,
+                                    "standardized block scalogram complete"
+                                );
+                            }
+
+                            info!(
+                                subject = formatted_id,
+                                task_name = task_name,
+                                num_blocks = block_names.len(),
+                                "finished all standardized block scalograms"
+                            );
+                        }
+                    }
+                }
+                Ok(())
             })();
             if let Err(e) = file_result {
                 error_count += 1;

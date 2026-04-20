@@ -1,8 +1,8 @@
 use anyhow::Result;
-use config::TcpSubjectSelectionConfig;
-use config::annex;
-use config::bids_subject_id::BidsSubjectId;
-use config::polars_csv;
+use utils::annex;
+use utils::bids_subject_id::BidsSubjectId;
+use utils::config::AppConfig;
+use utils::polars_csv;
 use git2::Repository;
 use polars::prelude::*;
 use std::fs;
@@ -36,7 +36,7 @@ fn write_sorted<P: AsRef<std::path::Path>>(path: P, df: &DataFrame) -> Result<()
     Ok(())
 }
 
-pub fn run(cfg: &TcpSubjectSelectionConfig) -> Result<()> {
+pub fn run(cfg: &AppConfig) -> Result<()> {
     info!("{:?}", cfg);
 
     ////////////////////////
@@ -44,7 +44,7 @@ pub fn run(cfg: &TcpSubjectSelectionConfig) -> Result<()> {
     ////////////////////////
 
     // Clone dataset
-    let dataset_dir = &cfg.tcp_dir;
+    let dataset_dir = &cfg.tcp_repo_dir;
     if !dataset_dir.is_dir() {
         let dataset_url = "https://github.com/OpenNeuroDatasets/ds005237.git";
         let local_path = dataset_dir;
@@ -93,7 +93,7 @@ pub fn run(cfg: &TcpSubjectSelectionConfig) -> Result<()> {
     // Apply Demos Filters //
     /////////////////////////
 
-    let filter_output_dir = &cfg.output_dir;
+    let filter_output_dir = &cfg.subject_filter_dir;
     fs::create_dir_all(&filter_output_dir)?;
 
     // Check demos file is available

@@ -1,6 +1,8 @@
 use anyhow::Result;
-use config::{HilbertHuangConfig, bids_filename::BidsFilename, bids_subject_id::BidsSubjectId};
-use hdf5_io::{H5Attr, open_or_create, open_or_create_group, write_dataset};
+use utils::bids_filename::BidsFilename;
+use utils::bids_subject_id::BidsSubjectId;
+use utils::config::AppConfig;
+use utils::hdf5_io::{H5Attr, open_or_create, open_or_create_group, write_dataset};
 use ndarray::{Array3, s};
 use scirs2_signal::hilbert::hilbert;
 use std::{collections::BTreeMap, fs, path::PathBuf, time::Instant};
@@ -355,18 +357,18 @@ fn write_hht_standardized(hht_std_group: &hdf5::Group, result: &HHTResult, force
     Ok(())
 }
 
-pub fn run(cfg: &HilbertHuangConfig) -> Result<()> {
+pub fn run(cfg: &AppConfig) -> Result<()> {
     let run_start = Instant::now();
 
     unsafe { std::env::set_var("HDF5_USE_FILE_LOCKING", "FALSE") };
 
     info!(
-        bold_ts_dir = %cfg.bold_ts_dir.display(),
+        parcellated_ts_dir = %cfg.parcellated_ts_dir.display(),
         force = cfg.force,
         "starting HHT pipeline (MVMD-based Hilbert-Huang Transform)"
     );
 
-    let subjects: BTreeMap<String, PathBuf> = fs::read_dir(&cfg.bold_ts_dir)?
+    let subjects: BTreeMap<String, PathBuf> = fs::read_dir(&cfg.parcellated_ts_dir)?
         .filter_map(|entry_result| entry_result.ok())
         .filter_map(|entry| {
             let path = entry.path();

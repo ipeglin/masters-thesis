@@ -4,9 +4,11 @@ mod models;
 use std::{collections::BTreeMap, fs, path::PathBuf, time::Instant};
 
 use anyhow::Result;
-use atlas::BrainAtlas;
-use config::{FeatureExtractionConfig, bids_filename::BidsFilename, bids_subject_id::BidsSubjectId};
-use hdf5_io::{H5Attr, open_or_create_group, write_attrs, write_dataset};
+use utils::atlas::BrainAtlas;
+use utils::bids_filename::BidsFilename;
+use utils::bids_subject_id::BidsSubjectId;
+use utils::config::AppConfig;
+use utils::hdf5_io::{H5Attr, open_or_create_group, write_attrs, write_dataset};
 use tch::{Kind, Tensor};
 use tracing::{debug, info, warn};
 
@@ -16,19 +18,19 @@ pub use feature_extractor::FeatureExtractor;
 // Pipeline entry point
 // ---------------------------------------------------------------------------
 
-pub fn run(cfg: &FeatureExtractionConfig) -> Result<()> {
+pub fn run(cfg: &AppConfig) -> Result<()> {
     let run_start = Instant::now();
 
     unsafe { std::env::set_var("HDF5_USE_FILE_LOCKING", "FALSE") };
 
     info!(
-        bold_ts_dir = %cfg.bold_ts_dir.display(),
+        parcellated_ts_dir = %cfg.parcellated_ts_dir.display(),
         force = cfg.force,
         "starting CNN feature extraction pipeline"
     );
 
     // num_classes=1 is a placeholder — classifier head unused for feature extraction.
-    let weights_path = cfg.cnn_weights_path.as_deref();
+    let weights_path = cfg.feature_extraction.cnn_weights_path.as_deref();
     let extractor = FeatureExtractor::new(weights_path, 1)?;
     match weights_path {
         Some(p) => info!(weights = %p.display(), "DenseNet-201 initialised with pretrained weights"),
@@ -54,7 +56,7 @@ pub fn run(cfg: &FeatureExtractionConfig) -> Result<()> {
         "selected target ROIs for feature extraction (vPFC + mPFC + AMY)"
     );
 
-    let subjects: BTreeMap<String, PathBuf> = fs::read_dir(&cfg.bold_ts_dir)?
+    let subjects: BTreeMap<String, PathBuf> = fs::read_dir(&cfg.parcellated_ts_dir)?
         .filter_map(|e| e.ok())
         .filter_map(|e| {
             let path = e.path();
@@ -108,7 +110,7 @@ pub fn run(cfg: &FeatureExtractionConfig) -> Result<()> {
 
                 // Open read-write: features are written back into the same file
                 // under a new `features/` tree alongside cwt/, hht/, etc.
-                let h5_file = hdf5_io::open_or_create(file_path)?;
+                let h5_file = utils::hdf5_io::open_or_create(file_path)?;
                 let features_root = open_or_create_group(&h5_file, "features", false)?;
                 let labels_joined = roi_labels.join(",");
 

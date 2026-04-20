@@ -1,8 +1,8 @@
 use anyhow::Result;
-use config::FcConfig;
-use config::bids_filename::BidsFilename;
-use config::bids_subject_id::BidsSubjectId;
-use hdf5_io::{H5Attr, open_or_create, open_or_create_group, write_attrs, write_dataset};
+use utils::bids_filename::BidsFilename;
+use utils::bids_subject_id::BidsSubjectId;
+use utils::config::AppConfig;
+use utils::hdf5_io::{H5Attr, open_or_create, open_or_create_group, write_attrs, write_dataset};
 use ndarray::{Array2, Array3, Axis, concatenate};
 use std::collections::BTreeMap;
 use std::fs;
@@ -268,7 +268,7 @@ fn process_mvmd_modes(
     Ok(fisher_per_mode)
 }
 
-pub fn run(cfg: &FcConfig) -> Result<()> {
+pub fn run(cfg: &AppConfig) -> Result<()> {
     let run_start = Instant::now();
 
     // Disable HDF5 advisory file locking — required on macOS and some networked filesystems
@@ -276,12 +276,12 @@ pub fn run(cfg: &FcConfig) -> Result<()> {
     unsafe { std::env::set_var("HDF5_USE_FILE_LOCKING", "FALSE") };
 
     info!(
-        bold_ts_dir = %cfg.bold_ts_dir.display(),
+        parcellated_ts_dir = %cfg.parcellated_ts_dir.display(),
         force = cfg.force,
         "starting fMRI FC pipeline"
     );
 
-    let subjects: BTreeMap<String, PathBuf> = fs::read_dir(&cfg.bold_ts_dir)?
+    let subjects: BTreeMap<String, PathBuf> = fs::read_dir(&cfg.parcellated_ts_dir)?
         .filter_map(|e| e.ok())
         .filter_map(|e| {
             let path = e.path();

@@ -19,5 +19,4 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
-config = { path = "../config" }
-hdf5_io = { path = "../hdf5_io" }
+utils = { path = "../utils" }

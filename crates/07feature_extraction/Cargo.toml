@@ -9,6 +9,4 @@ hdf5 = { workspace = true }
 tracing = { workspace = true }
 tch = "0.24.0"
 
-atlas = { path = "../atlas" }
-config = { path = "../config" }
-hdf5_io = { path = "../hdf5_io" }
+utils = { path = "../utils" }

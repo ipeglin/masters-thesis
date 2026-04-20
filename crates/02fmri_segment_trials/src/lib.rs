@@ -1,7 +1,7 @@
 use anyhow::Result;
-use config::TrialSegmentationConfig;
-use config::bids_filename::BidsFilename;
-use config::bids_subject_id::BidsSubjectId;
+use utils::bids_filename::BidsFilename;
+use utils::bids_subject_id::BidsSubjectId;
+use utils::config::AppConfig;
 use hdf5::types::VarLenUnicode;
 use ndarray::{Array2, s};
 use polars::prelude::*;
@@ -39,7 +39,7 @@ pub struct GlmConditions {
     pub block_level: BTreeMap<String, (Vec<f64>, Vec<f64>)>,
 }
 
-pub fn run(cfg: &TrialSegmentationConfig) -> Result<()> {
+pub fn run(cfg: &AppConfig) -> Result<()> {
     let _run_start = Instant::now();
 
     // Disable HDF5 advisory file locking — required on macOS and some networked filesystems
@@ -47,15 +47,15 @@ pub fn run(cfg: &TrialSegmentationConfig) -> Result<()> {
     unsafe { std::env::set_var("HDF5_USE_FILE_LOCKING", "FALSE") };
 
     info!(
-        tcp_dir = % cfg.tcp_dir.display(),
-        bold_ts_dir = %cfg.bold_ts_dir.display(),
-        glm_output_dir = %cfg.glm_output_dir.display(),
+        tcp_repo_dir = % cfg.tcp_repo_dir.display(),
+        parcellated_ts_dir = %cfg.parcellated_ts_dir.display(),
+        task_regressors_output_dir = %cfg.task_regressors_output_dir.display(),
         force = cfg.force,
         "starting fMRI trial segmentation"
     );
 
     // BTreeMap<formatted_subject_id, subject_dir>
-    let subjects: BTreeMap<String, PathBuf> = fs::read_dir(&cfg.bold_ts_dir)?
+    let subjects: BTreeMap<String, PathBuf> = fs::read_dir(&cfg.parcellated_ts_dir)?
         .filter_map(|entry_result| entry_result.ok())
         .filter_map(|entry| {
             let path = entry.path();
@@ -113,7 +113,7 @@ pub fn run(cfg: &TrialSegmentationConfig) -> Result<()> {
             events_bids.extension = Some(".tsv".to_string());
             let event_file_name = events_bids.to_filename();
             let event_file = &cfg
-                .tcp_dir
+                .tcp_repo_dir
                 .join(formatted_id)
                 .join("func")
                 .join(event_file_name);
@@ -123,7 +123,7 @@ pub fn run(cfg: &TrialSegmentationConfig) -> Result<()> {
 
             // Extract and write GLM condition files (trial- and block-level)
             let glm_conditions = extract_glm_conditions(&event_blocks)?;
-            let glm_subject_dir = cfg.glm_output_dir.join(formatted_id);
+            let glm_subject_dir = cfg.task_regressors_output_dir.join(formatted_id);
             write_glm_conditions(&glm_subject_dir, &event_file_base, &glm_conditions)?;
 
             info!(
