@@ -11,5 +11,12 @@ config.toml
 .LSOverride
 
 # IDUN setup for modules
+# LEGACY
 setup_env.*
 build_hdf5.*
+# IDUN identifier
+.sys-idun
+
+# Large files
+cnn_model_weights/
+atlases/
