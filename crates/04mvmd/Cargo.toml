@@ -14,7 +14,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+rustfft = { workspace = true }
 
-config = { path = "../config" }
-signals = { path = "../signals" }
-hdf5_io = { path = "../hdf5_io" }
+utils = { path = "../utils" }

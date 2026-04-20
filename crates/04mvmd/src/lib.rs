@@ -1,19 +1,22 @@
+mod algorithms;
+
 use anyhow::Result;
-use config::MvmdConfig;
-use config::bids_filename::BidsFilename;
-use config::bids_subject_id::BidsSubjectId;
-use hdf5_io::{H5Attr, open_or_create, open_or_create_group, write_attrs, write_dataset};
 use ndarray::{Array2, Axis, concatenate};
 use polars::prelude::*;
-use signals::admm::ADMMConfig;
-use signals::mvmd::MVMD;
+use utils::bids_filename::BidsFilename;
+use utils::bids_subject_id::BidsSubjectId;
+use utils::config::AppConfig;
+use utils::hdf5_io::{H5Attr, open_or_create, open_or_create_group, write_attrs, write_dataset};
+
+use crate::algorithms::admm::ADMMConfig;
+use crate::algorithms::mvmd::MVMD;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
 use tracing::{debug, info, warn};
 
-pub fn run(cfg: &MvmdConfig) -> Result<()> {
+pub fn run(cfg: &AppConfig) -> Result<()> {
     let _run_start = Instant::now();
 
     // Disable HDF5 advisory file locking — required on macOS and some networked filesystems
@@ -21,13 +24,13 @@ pub fn run(cfg: &MvmdConfig) -> Result<()> {
     unsafe { std::env::set_var("HDF5_USE_FILE_LOCKING", "FALSE") };
 
     info!(
-        tcp_dir = % cfg.tcp_dir.display(),
-        bold_ts_dir = %cfg.bold_ts_dir.display(),
-        num_modes = %cfg.num_modes,
+        tcp_repo_dir = % cfg.tcp_repo_dir.display(),
+        parcellated_ts_dir = %cfg.parcellated_ts_dir.display(),
+        num_modes = %cfg.mvmd.num_modes,
         "starting fMRI MVMD decomposition"
     );
 
-    let subjects: BTreeMap<String, PathBuf> = fs::read_dir(&cfg.bold_ts_dir)?
+    let subjects: BTreeMap<String, PathBuf> = fs::read_dir(&cfg.parcellated_ts_dir)?
         .filter_map(|entry_result| entry_result.ok())
         .filter_map(|entry| {
             let path = entry.path();
@@ -71,7 +74,7 @@ pub fn run(cfg: &MvmdConfig) -> Result<()> {
             // MVMD Decomposition //
             ////////////////////////
 
-            let num_modes = cfg.num_modes;
+            let num_modes = cfg.mvmd.num_modes;
             let admm_config = ADMMConfig::default();
 
             let h5_file = open_or_create(file_path)?;
