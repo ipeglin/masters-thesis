@@ -1,15 +1,15 @@
 use std::{collections::HashSet, fs, path::Path, time::Instant};
 
 use anyhow::{Context, Result};
-use utils::bids_subject_id::BidsSubjectId;
-use utils::config::AppConfig;
-use utils::polars_csv;
 use polars::prelude::*;
 use rand::SeedableRng;
 use rand::seq::IteratorRandom;
 use rand::seq::SliceRandom;
 use rand_chacha::ChaCha8Rng;
 use tracing::{debug, info, warn};
+use utils::bids_subject_id::BidsSubjectId;
+use utils::config::AppConfig;
+use utils::polars_csv;
 
 fn write_subject_set<P: AsRef<Path>>(path: P, subjects: &[String]) -> Result<()> {
     if let Some(parent) = path.as_ref().parent() {
@@ -164,14 +164,21 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         "Dataset split complete"
     );
 
-    write_subject_set(&cfg.training_subjects_path, &train_set)?;
-    write_subject_set(&cfg.validation_subjects_path, &val_set)?;
-    write_subject_set(&cfg.test_subjects_path, &test_set)?;
+    let train_subjects_file = &cfg.data_splitting_output_dir.join("subjects_train.csv");
+    write_subject_set(&train_subjects_file, &train_set)?;
+
+    let test_subjects_file = &cfg.data_splitting_output_dir.join("subjects_test.csv");
+    write_subject_set(&test_subjects_file, &val_set)?;
+
+    let validation_subjects_file = &cfg
+        .data_splitting_output_dir
+        .join("subjects_validation.csv");
+    write_subject_set(&validation_subjects_file, &test_set)?;
 
     info!(
-        train_file = %cfg.training_subjects_path.display(),
-        val_file = %cfg.validation_subjects_path.display(),
-        test_file = %cfg.test_subjects_path.display(),
+        train_file = %train_subjects_file.display(),
+        val_file = %test_subjects_file.display(),
+        test_file = %validation_subjects_file.display(),
         "Split subject keys written"
     );
 

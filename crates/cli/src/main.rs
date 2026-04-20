@@ -1,9 +1,9 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
-use utils::config::{AppConfig, load_config};
 use std::path::PathBuf;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+use utils::config::{AppConfig, load_config};
 
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]
 enum LogFormat {
@@ -142,13 +142,7 @@ enum Command {
         parcellated_ts_dir: Option<PathBuf>,
 
         #[arg(long)]
-        training_subjects: Option<PathBuf>,
-
-        #[arg(long)]
-        test_subjects: Option<PathBuf>,
-
-        #[arg(long)]
-        validation_subjects: Option<PathBuf>,
+        data_splitting_dir: Option<PathBuf>,
 
         #[arg(long, short = 'f')]
         force: bool,
@@ -158,13 +152,7 @@ enum Command {
         parcellated_ts_dir: Option<PathBuf>,
 
         #[arg(long)]
-        training_subjects: Option<PathBuf>,
-
-        #[arg(long)]
-        test_subjects: Option<PathBuf>,
-
-        #[arg(long)]
-        validation_subjects: Option<PathBuf>,
+        data_splitting_dir: Option<PathBuf>,
     },
 }
 
@@ -312,7 +300,10 @@ fn main() -> Result<()> {
 
             mvmd::run(&cfg)
         }
-        Command::Cwt { parcellated_ts_dir, force } => {
+        Command::Cwt {
+            parcellated_ts_dir,
+            force,
+        } => {
             if let Some(v) = parcellated_ts_dir {
                 cfg.parcellated_ts_dir = v;
             }
@@ -322,7 +313,10 @@ fn main() -> Result<()> {
 
             cwt::run(&cfg)
         }
-        Command::Hht { parcellated_ts_dir, force } => {
+        Command::Hht {
+            parcellated_ts_dir,
+            force,
+        } => {
             if let Some(v) = parcellated_ts_dir {
                 cfg.parcellated_ts_dir = v;
             }
@@ -332,7 +326,10 @@ fn main() -> Result<()> {
 
             hilbert::run(&cfg)
         }
-        Command::Fc { parcellated_ts_dir, force } => {
+        Command::Fc {
+            parcellated_ts_dir,
+            force,
+        } => {
             if let Some(v) = parcellated_ts_dir {
                 cfg.parcellated_ts_dir = v;
             }
@@ -371,9 +368,7 @@ fn main() -> Result<()> {
         Command::SplitData {
             subject_filter_dir,
             parcellated_ts_dir,
-            training_subjects,
-            test_subjects,
-            validation_subjects,
+            data_splitting_dir,
             force,
         } => {
             if let Some(v) = subject_filter_dir {
@@ -382,14 +377,8 @@ fn main() -> Result<()> {
             if let Some(v) = parcellated_ts_dir {
                 cfg.parcellated_ts_dir = v;
             }
-            if let Some(v) = training_subjects {
-                cfg.training_subjects_path = v;
-            }
-            if let Some(v) = test_subjects {
-                cfg.test_subjects_path = v;
-            }
-            if let Some(v) = validation_subjects {
-                cfg.validation_subjects_path = v;
+            if let Some(v) = data_splitting_dir {
+                cfg.data_splitting_output_dir = v;
             }
             if force {
                 cfg.force = true;
@@ -399,21 +388,13 @@ fn main() -> Result<()> {
         }
         Command::Classify {
             parcellated_ts_dir,
-            training_subjects,
-            test_subjects,
-            validation_subjects,
+            data_splitting_dir,
         } => {
             if let Some(v) = parcellated_ts_dir {
                 cfg.parcellated_ts_dir = v;
             }
-            if let Some(v) = training_subjects {
-                cfg.training_subjects_path = v;
-            }
-            if let Some(v) = test_subjects {
-                cfg.test_subjects_path = v;
-            }
-            if let Some(v) = validation_subjects {
-                cfg.validation_subjects_path = v;
+            if let Some(v) = data_splitting_dir {
+                cfg.data_splitting_output_dir = v;
             }
 
             classification::run(&cfg)
