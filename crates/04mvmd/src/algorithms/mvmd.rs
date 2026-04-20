@@ -1,7 +1,8 @@
 use super::admm::{ADMMConfig, ADMMOptimizer};
 use ndarray::{Array1, Array2, Array3};
 use polars::prelude::*;
-use rustfft::{num_complex::Complex64, FftPlanner};
+use rayon::prelude::*;
+use rustfft::{FftPlanner, num_complex::Complex64};
 use tracing::{debug, info, trace};
 
 /// Initialization method for center frequencies in MVMD/VMD algorithms.
@@ -309,42 +310,48 @@ impl MVMD {
 
                 // Update mode: modes_hat[k] = (signal - sum(other_modes) - 0.5*lambda) / (1 + alpha*(f - omega)^2)
                 // sum(other_modes) = modes_sum - modes_hat[k]
-                for c in 0..self.num_channels {
-                    for f in 0..num_fpoints {
-                        let old_val = modes_hat[k][c][f];
+                // Parallel over channels: each channel's (modes_hat[k][c], modes_sum[c]) slab
+                // is disjoint, and residual_sqr contributions sum via rayon reduce.
+                let alpha = self.alpha;
+                let residual_delta: f64 = modes_hat[k]
+                    .par_iter_mut()
+                    .zip(modes_sum.par_iter_mut())
+                    .zip(signal_hat.par_iter())
+                    .zip(lambda_current.par_iter())
+                    .map(|(((mh_c, ms_c), sh_c), lam_c)| {
+                        let mut local: f64 = 0.0;
+                        for f in 0..num_fpoints {
+                            let old_val = mh_c[f];
+                            let sum_other = ms_c[f] - old_val;
+                            let numerator = sh_c[f] - sum_other - lam_c[f].scale(0.5);
+                            let freq_diff = f_points[f] - omega_k;
+                            let denominator = 1.0 + alpha * freq_diff * freq_diff;
+                            let new_val = numerator.scale(1.0 / denominator);
+                            mh_c[f] = new_val;
+                            ms_c[f] = ms_c[f] - old_val + new_val;
+                            let diff = new_val - old_val;
+                            local += diff.norm_sqr();
+                        }
+                        local
+                    })
+                    .sum();
+                residual_diff += residual_delta;
 
-                        // sum of other modes = total sum - this mode
-                        let sum_other = modes_sum[c][f] - old_val;
-
-                        let numerator =
-                            signal_hat[c][f] - sum_other - lambda_current[c][f].scale(0.5);
-
-                        let freq_diff = f_points[f] - omega_k;
-                        let denominator = 1.0 + self.alpha * freq_diff * freq_diff;
-
-                        let new_val = numerator.scale(1.0 / denominator);
-                        modes_hat[k][c][f] = new_val;
-
-                        // Update modes_sum incrementally
-                        modes_sum[c][f] = modes_sum[c][f] - old_val + new_val;
-
-                        // Update residual
-                        let diff = new_val - old_val;
-                        residual_diff += diff.norm_sqr();
-                    }
-                }
-
-                // Update center frequency (spectral centroid)
-                let mut weighted_sum = 0.0;
-                let mut total_power = 0.0;
-
-                for c in 0..self.num_channels {
-                    for f in 0..num_fpoints {
-                        let power = modes_hat[k][c][f].norm_sqr();
-                        weighted_sum += power * f_points[f];
-                        total_power += power;
-                    }
-                }
+                // Update center frequency (spectral centroid). Reduce over channels
+                // returning (weighted_sum, total_power).
+                let (weighted_sum, total_power): (f64, f64) = modes_hat[k]
+                    .par_iter()
+                    .map(|mh_c| {
+                        let mut ws: f64 = 0.0;
+                        let mut tp: f64 = 0.0;
+                        for f in 0..num_fpoints {
+                            let power = mh_c[f].norm_sqr();
+                            ws += power * f_points[f];
+                            tp += power;
+                        }
+                        (ws, tp)
+                    })
+                    .reduce(|| (0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1));
 
                 omega_next[k] = if total_power > 0.0 {
                     weighted_sum / total_power
@@ -353,14 +360,19 @@ impl MVMD {
                 };
             }
 
-            // Dual ascent: lambda = lambda + tau * (sum(modes) - signal)
-            // modes_sum is already computed and maintained incrementally
-            for c in 0..self.num_channels {
-                for f in 0..num_fpoints {
-                    let residual = modes_sum[c][f] - signal_hat[c][f];
-                    lambda_next[c][f] = lambda_current[c][f] + residual.scale(self.admm_config.tau);
-                }
-            }
+            // Dual ascent: lambda = lambda + tau * (sum(modes) - signal). Independent per c.
+            let tau = self.admm_config.tau;
+            lambda_next
+                .par_iter_mut()
+                .zip(lambda_current.par_iter())
+                .zip(modes_sum.par_iter())
+                .zip(signal_hat.par_iter())
+                .for_each(|(((ln_c, lc_c), ms_c), sh_c)| {
+                    for f in 0..num_fpoints {
+                        let residual = ms_c[f] - sh_c[f];
+                        ln_c[f] = lc_c[f] + residual.scale(tau);
+                    }
+                });
 
             // Swap current and next
             std::mem::swap(&mut omega_current, &mut omega_next);
@@ -506,37 +518,30 @@ impl MVMD {
         let mut planner = FftPlanner::<f64>::new();
         let fft = planner.plan_fft_forward(padded_len);
 
-        let mut result = Vec::with_capacity(self.num_channels);
+        // Parallel over channels: rustfft's Fft is Send+Sync via Arc.
+        self.data
+            .par_iter()
+            .map(|channel_data| {
+                let mut padded: Vec<Complex64> = Vec::with_capacity(padded_len);
 
-        for channel_data in &self.data {
-            // Symmetric padding
-            let mut padded: Vec<Complex64> = Vec::with_capacity(padded_len);
+                for i in (0..pad_left).rev() {
+                    let idx = i.min(tpoints - 1);
+                    padded.push(Complex64::new(channel_data[idx], 0.0));
+                }
 
-            // Left padding (mirror)
-            for i in (0..pad_left).rev() {
-                let idx = i.min(tpoints - 1);
-                padded.push(Complex64::new(channel_data[idx], 0.0));
-            }
+                for &val in channel_data {
+                    padded.push(Complex64::new(val, 0.0));
+                }
 
-            // Original signal
-            for &val in channel_data {
-                padded.push(Complex64::new(val, 0.0));
-            }
+                for i in 0..pad_right {
+                    let idx = (tpoints - 1 - i).max(0);
+                    padded.push(Complex64::new(channel_data[idx], 0.0));
+                }
 
-            // Right padding (mirror)
-            for i in 0..pad_right {
-                let idx = (tpoints - 1 - i).max(0);
-                padded.push(Complex64::new(channel_data[idx], 0.0));
-            }
-
-            // Perform FFT
-            fft.process(&mut padded);
-
-            // Take first (tpoints + 1) frequency bins
-            result.push(padded[..tpoints + 1].to_vec());
-        }
-
-        result
+                fft.process(&mut padded);
+                padded[..tpoints + 1].to_vec()
+            })
+            .collect()
     }
 
     /// Transform frequency-domain signal back to time domain
@@ -548,44 +553,35 @@ impl MVMD {
         let mut planner = FftPlanner::<f64>::new();
         let ifft = planner.plan_fft_inverse(full_len);
 
-        let mut result = Vec::with_capacity(self.num_channels);
+        // Parallel over channels: Fft plan is shared via Arc (Send+Sync).
+        signal_hat
+            .par_iter()
+            .map(|channel_hat| {
+                let mut full_hat: Vec<Complex64> = vec![Complex64::new(0.0, 0.0); full_len];
 
-        for channel_hat in signal_hat {
-            // Construct Hermitian-symmetric spectrum for real signal reconstruction
-            let mut full_hat: Vec<Complex64> = vec![Complex64::new(0.0, 0.0); full_len];
+                for i in 0..red_ft {
+                    full_hat[red_ft + i] = channel_hat[i];
+                }
 
-            // positive frequencies: full_hat[red_ft:] = channel_hat[:red_ft]
-            for i in 0..red_ft {
-                full_hat[red_ft + i] = channel_hat[i];
-            }
+                for i in 1..=red_ft {
+                    full_hat[red_ft - i] = channel_hat[i].conj();
+                }
 
-            // negative frequencies (conjugate mirror): full_hat[:red_ft] = conj(channel_hat[red_ft:0:-1])
-            for i in 1..=red_ft {
-                full_hat[red_ft - i] = channel_hat[i].conj();
-            }
+                let mut shifted: Vec<Complex64> = vec![Complex64::new(0.0, 0.0); full_len];
+                let mid = full_len / 2;
+                for i in 0..full_len {
+                    let new_idx = (i + mid) % full_len;
+                    shifted[new_idx] = full_hat[i];
+                }
 
-            // ifftshift equivalent
-            let mut shifted: Vec<Complex64> = vec![Complex64::new(0.0, 0.0); full_len];
-            let mid = full_len / 2;
-            for i in 0..full_len {
-                let new_idx = (i + mid) % full_len;
-                shifted[new_idx] = full_hat[i];
-            }
+                ifft.process(&mut shifted);
 
-            // Perform IFFT
-            ifft.process(&mut shifted);
-
-            // Extract real part and remove padding
-            let start = red_ft / 2;
-            let end = start + red_ft;
-            let scale = 1.0 / full_len as f64;
-
-            let time_signal: Vec<f64> = shifted[start..end].iter().map(|c| c.re * scale).collect();
-
-            result.push(time_signal);
-        }
-
-        result
+                let start = red_ft / 2;
+                let end = start + red_ft;
+                let scale = 1.0 / full_len as f64;
+                shifted[start..end].iter().map(|c| c.re * scale).collect()
+            })
+            .collect()
     }
 }
 
