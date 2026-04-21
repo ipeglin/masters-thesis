@@ -20,3 +20,6 @@ build_hdf5.*
 # Large files
 cnn_model_weights/
 atlases/
+
+# planning/tracking notes
+.planning/

@@ -1,4 +1,4 @@
-use tch::{nn, nn::ModuleT, Tensor};
+use tch::{Tensor, nn, nn::ModuleT};
 
 const GROWTH_RATE: i64 = 32;
 const BN_SIZE: i64 = 4; // bottleneck multiplier: inter_channels = BN_SIZE * GROWTH_RATE = 128
@@ -21,9 +21,23 @@ impl DenseNet201 {
 
         // Initial Convolution
         let mut features = nn::seq_t()
-            .add(nn::conv2d(&fp / "conv0", 3, 64, 7, nn::ConvConfig { stride: 2, padding: 3, bias: false, ..Default::default() }))
+            .add(nn::conv2d(
+                &fp / "conv0",
+                3,
+                64,
+                7,
+                nn::ConvConfig {
+                    stride: 2,
+                    padding: 3,
+                    bias: false,
+                    ..Default::default()
+                },
+            ))
             .add(nn::batch_norm2d(&fp / "norm0", 64, Default::default()))
-            .add_fn(|x| x.relu().max_pool2d(&[3, 3], &[2, 2], &[1, 1], &[1, 1], false));
+            .add_fn(|x| {
+                x.relu()
+                    .max_pool2d(&[3, 3], &[2, 2], &[1, 1], &[1, 1], false)
+            });
 
         // Dense Blocks and Transition Layers
         //   Block 1:  6 layers,  64 channels in -> 256 out
@@ -34,7 +48,7 @@ impl DenseNet201 {
         //   Trans 3:            1792 -> 896
         //   Block 4: 32 layers, 896 channels in -> 1920 out
         features = features
-            .add(Self::dense_block(&fp / "denseblock1",  6,  64))
+            .add(Self::dense_block(&fp / "denseblock1", 6, 64))
             .add(Self::transition(&fp / "transition1", 256, 128))
             .add(Self::dense_block(&fp / "denseblock2", 12, 128))
             .add(Self::transition(&fp / "transition2", 512, 256))
@@ -45,11 +59,18 @@ impl DenseNet201 {
         // Final normalization and global average pool -> 1920-dim flat vector
         features = features
             .add(nn::batch_norm2d(&fp / "norm5", 1920, Default::default()))
-            .add_fn(|x| x.relu().avg_pool2d(&[7, 7], &[1, 1], &[0, 0], false, true, 1).flat_view());
+            .add_fn(|x| {
+                x.relu()
+                    .avg_pool2d(&[7, 7], &[1, 1], &[0, 0], false, true, 1)
+                    .flat_view()
+            });
 
         let classifier = nn::linear(vs / "classifier", 1920, num_classes, Default::default());
 
-        DenseNet201 { features, classifier }
+        DenseNet201 {
+            features,
+            classifier,
+        }
     }
 
     /// Extract the 1920-dim feature vector before the classifier.
@@ -73,22 +94,59 @@ impl DenseNet201 {
     /// Output is concatenated with input along the channel dimension (feature reuse).
     fn dense_layer(vs: nn::Path, in_channels: i64) -> impl ModuleT + 'static {
         let inter_channels = BN_SIZE * GROWTH_RATE; // 128
-        let bn1   = nn::batch_norm2d(&vs / "norm1", in_channels, Default::default());
-        let conv1 = nn::conv2d(&vs / "conv1", in_channels, inter_channels, 1, nn::ConvConfig { bias: false, ..Default::default() });
-        let bn2   = nn::batch_norm2d(&vs / "norm2", inter_channels, Default::default());
-        let conv2 = nn::conv2d(&vs / "conv2", inter_channels, GROWTH_RATE, 3, nn::ConvConfig { padding: 1, bias: false, ..Default::default() });
+        let bn1 = nn::batch_norm2d(&vs / "norm1", in_channels, Default::default());
+        let conv1 = nn::conv2d(
+            &vs / "conv1",
+            in_channels,
+            inter_channels,
+            1,
+            nn::ConvConfig {
+                bias: false,
+                ..Default::default()
+            },
+        );
+        let bn2 = nn::batch_norm2d(&vs / "norm2", inter_channels, Default::default());
+        let conv2 = nn::conv2d(
+            &vs / "conv2",
+            inter_channels,
+            GROWTH_RATE,
+            3,
+            nn::ConvConfig {
+                padding: 1,
+                bias: false,
+                ..Default::default()
+            },
+        );
         nn::func_t(move |x, train| {
-            let y = x.apply_t(&bn1, train).relu().apply(&conv1)
-                     .apply_t(&bn2, train).relu().apply(&conv2);
+            let y = x
+                .apply_t(&bn1, train)
+                .relu()
+                .apply(&conv1)
+                .apply_t(&bn2, train)
+                .relu()
+                .apply(&conv2);
             Tensor::cat(&[x, &y], 1)
         })
     }
 
     fn transition(vs: nn::Path, in_channels: i64, out_channels: i64) -> nn::SequentialT {
         nn::seq_t()
-            .add(nn::batch_norm2d(&vs / "norm", in_channels, Default::default()))
+            .add(nn::batch_norm2d(
+                &vs / "norm",
+                in_channels,
+                Default::default(),
+            ))
             .add_fn(|x| x.relu())
-            .add(nn::conv2d(&vs / "conv", in_channels, out_channels, 1, nn::ConvConfig { bias: false, ..Default::default() }))
+            .add(nn::conv2d(
+                &vs / "conv",
+                in_channels,
+                out_channels,
+                1,
+                nn::ConvConfig {
+                    bias: false,
+                    ..Default::default()
+                },
+            ))
             .add_fn(|x| x.avg_pool2d_default(2))
     }
 }

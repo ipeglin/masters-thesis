@@ -20,10 +20,14 @@ module load Rust/1.91.1-GCCcore-14.2.0
 log_info "Loading CUDA module (12.8.0)"
 module load CUDA/12.8.0
 
-LIBTORCH_DIR="$HOME/libtorch"
+# Respect user-defined LIBTORCH, default to $HOME/libtorch if not set
+LIBTORCH_DIR="${LIBTORCH:-$HOME/libtorch}"
+
 if [ ! -d "$LIBTORCH_DIR" ]; then
-  log_info "Libtorch not found. Downloading..."
-  cd "$HOME"
+  log_info "Libtorch not found at $LIBTORCH_DIR. Downloading..."
+  TARGET_PARENT="$(dirname "$LIBTORCH_DIR")"
+  mkdir -p "$TARGET_PARENT"
+  cd "$TARGET_PARENT"
   wget -q https://download.pytorch.org/libtorch/cu128/libtorch-cxx11-abi-shared-with-deps-2.11.0%2Bcu128.zip \
     || wget -q https://download.pytorch.org/libtorch/cu128/libtorch-shared-with-deps-2.11.0%2Bcu128.zip \
     || wget -q https://download.pytorch.org/libtorch/cpu/libtorch-shared-with-deps-2.11.0%2Bcpu.zip

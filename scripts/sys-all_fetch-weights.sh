@@ -16,22 +16,25 @@ fi
 mkdir -p "$WEIGHTS_DIR"
 
 # DenseNet201 Weights URL
-DENSENET_URL="https://github.com/ipeglin/masters-thesis-supplementary/raw/main/data/processed/densenet201_imagenet.pt"
-DENSENET_FILE="$WEIGHTS_DIR/densenet201_imagenet.pt"
+DENSENET_URL="https://github.com/ipeglin/masters-thesis-supplementary/raw/main/data/processed/densenet201_imagenet.safetensors"
+DENSENET_FILE="$WEIGHTS_DIR/densenet201_imagenet.safetensors"
 
 log_info "CNN Weights output directory set to: $WEIGHTS_DIR"
 
 if [ ! -f "$DENSENET_FILE" ]; then
-    log_info "Downloading densenet201_imagenet.pt weights..."
-    curl -L -s "$DENSENET_URL" -o "$DENSENET_FILE"
+    log_info "Downloading densenet201_imagenet.safetensors weights..."
+    curl -L -s -f "$DENSENET_URL" -o "$DENSENET_FILE"
+
     if [ $? -eq 0 ]; then
         log_success "Weights downloaded successfully."
     else
         log_err "Failed to download weights."
+        # Remove the potentially corrupt output file if curl failed midway
+        rm -f "$DENSENET_FILE"
         exit 1
     fi
 else
-    log_info "densenet201_imagenet.pt already exists, skipping download."
+    log_info "densenet201_imagenet.safetensors already exists, skipping download."
 fi
 
 # Update config.toml
