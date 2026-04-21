@@ -354,7 +354,7 @@ fn process_cwt_subgroup(
         "CWT scalogram features extracted"
     );
 
-    write_feature_group(features_parent, out_name, &per_roi, &mean, labels_joined, force)?;
+    write_feature_group(features_parent, out_name, &per_roi, &mean, roi_indices, labels_joined, force)?;
     Ok(())
 }
 
@@ -428,7 +428,7 @@ fn process_hht_subgroup(
         "HHT spectrogram features extracted"
     );
 
-    write_feature_group(features_parent, out_name, &per_roi, &mean, labels_joined, force)?;
+    write_feature_group(features_parent, out_name, &per_roi, &mean, roi_indices, labels_joined, force)?;
     Ok(())
 }
 
@@ -518,14 +518,16 @@ fn tensor_to_vec_f32(t: &Tensor) -> Vec<f32> {
 /// Write a feature subgroup with per-ROI and mean datasets plus ROI-label metadata.
 ///
 /// Layout:
-///   <parent>/<name>/per_roi  [n_rois, feat_dim]
-///   <parent>/<name>/mean     [feat_dim]
-///   <parent>/<name>@labels   ROI IDs used for per_roi rows (comma-separated)
+///   <parent>/<name>/per_roi       [n_rois, feat_dim]
+///   <parent>/<name>/mean          [feat_dim]
+///   <parent>/<name>/roi_indices   [n_rois] u32 — atlas indices for per_roi rows
+///   <parent>/<name>@labels        ROI IDs used for per_roi rows (comma-separated)
 fn write_feature_group(
     parent: &hdf5::Group,
     name: &str,
     per_roi: &Tensor,
     mean: &Tensor,
+    roi_indices: &[i64],
     labels_joined: &str,
     force: bool,
 ) -> Result<()> {
@@ -537,11 +539,21 @@ fn write_feature_group(
         _ => anyhow::bail!("unexpected per_roi feature shape {:?}", per_roi_shape),
     };
 
+    if roi_indices.len() != n_rois {
+        anyhow::bail!(
+            "roi_indices length {} does not match per_roi rows {}",
+            roi_indices.len(),
+            n_rois
+        );
+    }
+
     let per_roi_buf = tensor_to_vec_f32(per_roi);
     let mean_buf = tensor_to_vec_f32(mean);
+    let roi_idx_u32: Vec<u32> = roi_indices.iter().map(|&i| i as u32).collect();
 
     write_dataset(&group, "per_roi", &per_roi_buf, &[n_rois, feat_dim], None)?;
     write_dataset(&group, "mean", &mean_buf, &[feat_dim], None)?;
+    write_dataset(&group, "roi_indices", &roi_idx_u32, &[n_rois], None)?;
 
     write_attrs(
         &group,
