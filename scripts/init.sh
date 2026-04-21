@@ -33,6 +33,10 @@ IS_IDUN=false
 if [[ "$1" == "idun" ]] || [[ -f "$PROJECT_ROOT/.sys-idun" ]]; then
     IS_IDUN=true
     log_info "System detected: IDUN Cluster"
+    if [ ! -f "$PROJECT_ROOT/.sys-idun" ]; then
+        touch "$PROJECT_ROOT/.sys-idun"
+        log_info "Created .sys-idun flag file in project root."
+    fi
 else
     log_info "System detected: Local Machine"
 fi

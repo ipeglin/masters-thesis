@@ -20,7 +20,7 @@ Execution order (crates 00-09):
 **cli**: Pipeline CLI.
 
 ## Prerequisites
-Rust 1.82.0+. Git-annex for large data. HDF5 for timeseries.
+Rust 1.82.0+. Git-annex for large data. HDF5 for timeseries. Libtorch (PyTorch C++ API) for deep learning features.
 
 ## Setup & Initialization
 
@@ -50,9 +50,21 @@ This auto-loads IDUN specific config defaults and builds HDF5 (if missing).
 source scripts/sys-idun_env.sh
 ```
 
+This script will automatically detect if `LIBTORCH` is exported in your environment (e.g. from your `~/.bashrc`). If missing, it will automatically download the correct PyTorch CUDA binaries (`libtorch`) into `$HOME/libtorch`, and configure `LD_LIBRARY_PATH` for your session.
+
 ### Local Machine Setup
 
 **CRITICAL:** Run `bash scripts/init.sh` on local (Mac/Windows/Linux). It copies `config.toml` and fetches atlases. But **you MUST manually edit `config.toml`** and set your local directory paths (`tcp_repo_dir`, `fmriprep_output_dir`, etc.) after script finishes.
+
+**Local Libtorch Setup:** You must manually download and configure Libtorch to compile the CNN models (Stage 07).
+1. Download the appropriate [PyTorch C++ Library (LibTorch)](https://pytorch.org/) (CPU, MPS/Apple Silicon, or CUDA depending on your system).
+2. Extract the archive (e.g., to `$HOME/libtorch`).
+3. Set the `LIBTORCH` and relative Linker paths in your shell environment before running `cargo build` or the pipeline scripts:
+   ```bash
+   export LIBTORCH=$HOME/libtorch
+   export DYLD_LIBRARY_PATH=$LIBTORCH/lib:$DYLD_LIBRARY_PATH # (macOS)
+   export LD_LIBRARY_PATH=$LIBTORCH/lib:$LD_LIBRARY_PATH   # (Linux)
+   ```
 
 ## Building
 
