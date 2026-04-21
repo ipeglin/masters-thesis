@@ -1,10 +1,5 @@
-use anyhow::{bail, Result};
-use nalgebra::Matrix4;
 use ndarray::parallel::prelude::*;
-use ndarray::{Array2, Array3, Array4, Axis, ShapeBuilder};
-use nifti::{IntoNdArray, NiftiHeader, NiftiObject, NiftiVolume, ReaderOptions};
-use std::{collections::HashSet, path::PathBuf};
-use tracing::{debug, trace};
+use ndarray::{Array2, Array4, Axis};
 
 /// Standardization strategy for masked signal preprocessing.
 ///
@@ -241,8 +236,7 @@ pub(super) fn voxelwise_zscore_bold(data: &mut Array4<f32>) {
         .for_each(|mut plane| {
             for y in 0..ny {
                 for z in 0..nz {
-                    let mean: f32 =
-                        (0..nt).map(|t| plane[[y, z, t]]).sum::<f32>() / nt as f32;
+                    let mean: f32 = (0..nt).map(|t| plane[[y, z, t]]).sum::<f32>() / nt as f32;
                     let variance: f32 = (0..nt)
                         .map(|t| {
                             let d = plane[[y, z, t]] - mean;
