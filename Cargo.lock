@@ -502,6 +502,10 @@ dependencies = [
  "ndarray 0.15.6",
  "polars",
  "polars-io",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "serde",
+ "serde_json",
  "tracing",
  "utils",
 ]
@@ -514,7 +518,6 @@ dependencies = [
  "clap",
  "classification",
  "cwt",
- "data_splitting",
  "fc",
  "feature_extraction",
  "fmri_parcellation",
@@ -742,20 +745,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "data_splitting"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "hdf5",
- "polars",
- "polars-io",
- "rand 0.8.5",
- "rand_chacha 0.3.1",
- "tracing",
- "utils",
-]
-
-[[package]]
 name = "debug_unsafe"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -902,6 +891,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "hdf5",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
  "tch",
  "tracing",
  "utils",

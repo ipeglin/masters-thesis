@@ -6,12 +6,13 @@ use tracing::{debug, info, warn};
 use utils::bids_filename::BidsFilename;
 use utils::bids_subject_id::BidsSubjectId;
 use utils::config::AppConfig;
+use utils::frequency_bands;
 use utils::hdf5_io::{H5Attr, open_or_create, open_or_create_group, write_dataset};
 
-/// Sampling period (TR) in seconds — matches fMRI acquisition.
-const TR: f64 = 0.8;
-/// Sampling frequency in Hz.
-const FS: f64 = 1.0 / TR;
+/// Number of log-spaced frequency bins for marginal spectra and the 2-D Hilbert
+/// spectrum H(omega, t). Matches the CWT scale-grid height so HHT spectrograms
+/// and CWT scalograms share both frequency axis and DenseNet201 input height.
+const TARGET_N_FREQ: usize = 224;
 
 /// Result of a Hilbert-Huang Transform applied to a set of IMF modes.
 ///
@@ -37,28 +38,32 @@ struct HHTResult {
     /// 2-D Hilbert Spectrum H(ω,t): energy summed over modes, per channel [n_channels, n_freq_bins, n_timepoints]
     hilbert_spectrum: Vec<f64>,
     hilbert_spectrum_shape: [usize; 3],
-    /// Z-score standardized envelope per mode per channel [n_modes, n_channels, n_timepoints]
-    std_envelope: Vec<f64>,
-    /// Z-score standardized marginal spectra per mode per channel [n_modes, n_channels, n_freq_bins]
-    std_marginal_spectra: Vec<f64>,
-    /// Z-score standardized full spectrum per channel [n_channels, n_freq_bins]
-    std_full_spectrum: Vec<f64>,
-    /// Z-score standardized 2-D Hilbert Spectrum per channel [n_channels, n_freq_bins, n_timepoints]
-    std_hilbert_spectrum: Vec<f64>,
 }
 
 /// Compute HHT from a modes array with shape [n_modes, n_channels, n_timepoints].
 ///
 /// Modes are read from HDF5 as flat row-major with that shape ordering.
-fn compute_hht(modes_flat: &[f32], shape: &[usize]) -> Result<HHTResult> {
+fn compute_hht(cfg: &AppConfig, modes_flat: &[f32], shape: &[usize]) -> Result<HHTResult> {
     let n_modes = shape[0];
     let n_channels = shape[1];
     let n_timepoints = shape[2];
+    let sampling_rate = cfg.task_sampling_rate;
 
-    // Frequency bins for marginal spectrum: linspace(0, FS/2, n_timepoints/2 + 1)
-    let n_freq = n_timepoints / 2 + 1;
-    let df = FS / n_timepoints as f64;
-    let freq_axis: Vec<f64> = (0..n_freq).map(|i| i as f64 * df).collect();
+    // Log-spaced frequency grid in Hz, matching the CWT scale grid in
+    // `crates/03cwt`. Bounds come from `frequency_bands::SLOW_BANDS` so HHT
+    // spectra share the analysed BOLD window with CWT scalograms and MVMD.
+    //
+    // Energy is binned (not interpolated): each (amp^2, ifreq) sample at time t
+    // is dropped into the nearest log-grid bin. Samples whose instantaneous
+    // frequency falls outside [f_min, f_max] are discarded — same semantics as
+    // CWT, which is only defined on the chosen scale grid.
+    let f_min = frequency_bands::f_min();
+    let f_max = frequency_bands::f_max();
+    let n_freq = TARGET_N_FREQ;
+    let log_ratio_max = (f_max / f_min).ln();
+    let freq_axis: Vec<f64> = (0..n_freq)
+        .map(|i| f_min * (f_max / f_min).powf(i as f64 / (n_freq - 1) as f64))
+        .collect();
 
     let modes = Array3::from_shape_vec(
         (n_modes, n_channels, n_timepoints),
@@ -89,7 +94,7 @@ fn compute_hht(modes_flat: &[f32], shape: &[usize]) -> Result<HHTResult> {
 
             // Instantaneous frequency via unwrapped phase derivative
             let phase: Vec<f64> = analytic.iter().map(|z| z.im.atan2(z.re)).collect();
-            let ifreq = unwrapped_phase_to_ifreq(&phase, FS);
+            let ifreq = unwrapped_phase_to_ifreq(&phase, sampling_rate);
 
             // Write envelope and inst_freq into flat buffers
             let base = m * n_channels * n_timepoints + c * n_timepoints;
@@ -98,14 +103,20 @@ fn compute_hht(modes_flat: &[f32], shape: &[usize]) -> Result<HHTResult> {
 
             // Marginal Hilbert Spectrum: bin amplitude^2 by instantaneous frequency
             // 2-D Hilbert Spectrum H(ω,t): scatter energy into [freq_bin, t] cell
+            //
+            // Bin index found by inverting the log-spaced grid construction:
+            //   f_i = f_min * (f_max/f_min)^(i/(n_freq-1))
+            //   => i = round( log(f/f_min) / log(f_max/f_min) * (n_freq-1) )
+            // Pure histogram assignment — no interpolation, no resampling.
             let marg_base = m * n_channels * n_freq + c * n_freq;
             let hs_base = c * n_freq * n_timepoints;
             for t in 0..n_timepoints {
                 let f = ifreq[t];
-                if f < 0.0 || f > FS / 2.0 {
+                if f < f_min || f > f_max {
                     continue;
                 }
-                let bin = ((f / df).round() as usize).min(n_freq - 1);
+                let log_ratio = (f / f_min).ln() / log_ratio_max;
+                let bin = ((log_ratio * (n_freq - 1) as f64).round() as usize).min(n_freq - 1);
                 let energy = amp[t] * amp[t];
                 marginal_buf[marg_base + bin] += energy;
                 // H(ω,t): sum over modes, row-major [freq_bin, timepoint]
@@ -131,42 +142,6 @@ fn compute_hht(modes_flat: &[f32], shape: &[usize]) -> Result<HHTResult> {
         }
     }
 
-    // Z-score standardize envelope per (mode, channel) slice
-    let mut std_envelope_buf = vec![0f64; env_total];
-    for m in 0..n_modes {
-        for c in 0..n_channels {
-            let base = m * n_channels * n_timepoints + c * n_timepoints;
-            let standardized = zscore(&envelope_buf[base..base + n_timepoints]);
-            std_envelope_buf[base..base + n_timepoints].copy_from_slice(&standardized);
-        }
-    }
-
-    // Z-score standardize marginal spectra per (mode, channel) slice
-    let mut std_marginal_buf = vec![0f64; marg_total];
-    for m in 0..n_modes {
-        for c in 0..n_channels {
-            let base = m * n_channels * n_freq + c * n_freq;
-            let standardized = zscore(&marginal_buf[base..base + n_freq]);
-            std_marginal_buf[base..base + n_freq].copy_from_slice(&standardized);
-        }
-    }
-
-    // Z-score standardize full spectrum per channel
-    let mut std_full_buf = vec![0f64; full_total];
-    for c in 0..n_channels {
-        let base = c * n_freq;
-        let standardized = zscore(&full_buf[base..base + n_freq]);
-        std_full_buf[base..base + n_freq].copy_from_slice(&standardized);
-    }
-
-    // Z-score standardize 2-D Hilbert Spectrum per channel (flatten freq×time slice)
-    let mut std_hilbert_spectrum_buf = vec![0f64; hs_total];
-    for c in 0..n_channels {
-        let base = c * n_freq * n_timepoints;
-        let standardized = zscore(&hilbert_spectrum_buf[base..base + n_freq * n_timepoints]);
-        std_hilbert_spectrum_buf[base..base + n_freq * n_timepoints].copy_from_slice(&standardized);
-    }
-
     Ok(HHTResult {
         envelope: envelope_buf,
         envelope_shape: [n_modes, n_channels, n_timepoints],
@@ -179,27 +154,7 @@ fn compute_hht(modes_flat: &[f32], shape: &[usize]) -> Result<HHTResult> {
         full_spectrum_shape: [n_channels, n_freq],
         hilbert_spectrum: hilbert_spectrum_buf,
         hilbert_spectrum_shape: [n_channels, n_freq, n_timepoints],
-        std_envelope: std_envelope_buf,
-        std_hilbert_spectrum: std_hilbert_spectrum_buf,
-        std_marginal_spectra: std_marginal_buf,
-        std_full_spectrum: std_full_buf,
     })
-}
-
-/// Z-score standardize a slice in-place: (x - mean) / std per provided window.
-/// Returns a new Vec with standardized values; if std == 0, output is zero.
-fn zscore(data: &[f64]) -> Vec<f64> {
-    let n = data.len();
-    if n == 0 {
-        return vec![];
-    }
-    let mean = data.iter().sum::<f64>() / n as f64;
-    let variance = data.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / n as f64;
-    let std = variance.sqrt();
-    if std == 0.0 {
-        return vec![0.0; n];
-    }
-    data.iter().map(|&x| (x - mean) / std).collect()
 }
 
 /// Unwrap phase and compute instantaneous frequency via central differences.
@@ -237,7 +192,15 @@ fn unwrapped_phase_to_ifreq(phase: &[f64], fs: f64) -> Vec<f64> {
 }
 
 /// Write all HHT outputs to an HDF5 group.
-fn write_hht(hht_group: &hdf5::Group, result: &HHTResult, force: bool) -> Result<()> {
+fn write_hht(
+    cfg: &AppConfig,
+    hht_group: &hdf5::Group,
+    result: &HHTResult,
+    force: bool,
+) -> Result<()> {
+    let repetition_time: f64 = 1.0 / cfg.task_sampling_rate;
+    let f_min = frequency_bands::f_min();
+    let f_max = frequency_bands::f_max();
     write_dataset(
         hht_group,
         "envelope",
@@ -257,7 +220,13 @@ fn write_hht(hht_group: &hdf5::Group, result: &HHTResult, force: bool) -> Result
         "frequency_axis",
         &result.freq_axis,
         &[result.freq_axis.len()],
-        Some(&[H5Attr::f64("fs_hz", FS), H5Attr::f64("tr_s", TR)]),
+        Some(&[
+            H5Attr::f64("fs_hz", cfg.task_sampling_rate),
+            H5Attr::f64("tr_s", repetition_time),
+            H5Attr::string("spacing", "log"),
+            H5Attr::f64("f_min", f_min),
+            H5Attr::f64("f_max", f_max),
+        ]),
     )?;
 
     let marg_group = open_or_create_group(hht_group, "marginal_spectra", force)?;
@@ -294,68 +263,165 @@ fn write_hht(hht_group: &hdf5::Group, result: &HHTResult, force: bool) -> Result
     Ok(())
 }
 
-/// Write z-score standardized HHT outputs to an HDF5 group.
+/// Copy `roi_indices` dataset from MVMD source group to HHT destination group, if present.
+fn propagate_roi_indices(src: &hdf5::Group, dest: &hdf5::Group) -> Result<()> {
+    let Ok(ds) = src.dataset("roi_indices") else {
+        return Ok(());
+    };
+    if dest.dataset("roi_indices").is_ok() {
+        return Ok(());
+    }
+    let data: Vec<u32> = ds.read_raw()?;
+    write_dataset(dest, "roi_indices", &data, &[data.len()], None)?;
+    Ok(())
+}
+
+/// Compute HHT for a single MVMD subgroup containing a `modes` dataset and write outputs
+/// to a mirror group under `hht_parent` named `name`.
 ///
-/// Mirrors the structure of `write_hht` but uses standardized spectra. Envelope is
-/// z-scored per (mode, channel); marginal spectra and full spectrum are z-scored per
-/// channel across the frequency axis.
-fn write_hht_standardized(
-    hht_std_group: &hdf5::Group,
-    result: &HHTResult,
-    force: bool,
+/// Skips work if destination already contains `hilbert_spectrum`.
+/// Propagates `roi_indices` if present in source.
+fn process_mvmd_modes_group(
+    cfg: &AppConfig,
+    mvmd_parent: &hdf5::Group,
+    hht_parent: &hdf5::Group,
+    name: &str,
+    task_name: &str,
 ) -> Result<()> {
-    write_dataset(
-        hht_std_group,
-        "envelope",
-        &result.std_envelope,
-        &result.envelope_shape,
-        Some(&[H5Attr::string("standardization", "zscore_per_mode_channel")]),
-    )?;
-    write_dataset(
-        hht_std_group,
-        "instantaneous_frequency",
-        &result.inst_freq,
-        &result.inst_freq_shape,
-        None,
-    )?;
-    write_dataset(
-        hht_std_group,
-        "frequency_axis",
-        &result.freq_axis,
-        &[result.freq_axis.len()],
-        Some(&[H5Attr::f64("fs_hz", FS), H5Attr::f64("tr_s", TR)]),
-    )?;
+    let mvmd_sub = match mvmd_parent.group(name) {
+        Ok(g) => g,
+        Err(_) => {
+            debug!(
+                task_name = task_name,
+                group = name,
+                "mvmd subgroup missing, skipping"
+            );
+            return Ok(());
+        }
+    };
 
-    let marg_group = open_or_create_group(hht_std_group, "marginal_spectra", force)?;
-    write_dataset(
-        &marg_group,
-        "spectra",
-        &result.std_marginal_spectra,
-        &result.marginal_spectra_shape,
-        Some(&[H5Attr::string("standardization", "zscore_per_mode_channel")]),
-    )?;
+    let hht_done = !cfg.force
+        && hht_parent
+            .group(name)
+            .map(|g| g.dataset("hilbert_spectrum").is_ok())
+            .unwrap_or(false);
 
-    write_dataset(
-        hht_std_group,
-        "full_spectrum",
-        &result.std_full_spectrum,
-        &result.full_spectrum_shape,
-        Some(&[H5Attr::string(
-            "standardization",
-            "zscore_per_channel_across_frequency",
-        )]),
-    )?;
+    if hht_done {
+        debug!(
+            task_name = task_name,
+            group = name,
+            "HHT already computed, skipping (use --force to recompute)"
+        );
+        return Ok(());
+    }
 
-    write_dataset(
-        hht_std_group,
-        "hilbert_spectrum",
-        &result.std_hilbert_spectrum,
-        &result.hilbert_spectrum_shape,
-        Some(&[H5Attr::string(
-            "standardization",
-            "zscore_per_channel_across_freq_time",
-        )]),
-    )?;
+    let modes_ds = mvmd_sub.dataset("modes")?;
+    let modes_shape = modes_ds.shape();
+    let modes_flat: Vec<f32> = modes_ds.read_raw()?;
+
+    let [n_modes, n_channels, n_timepoints] = match modes_shape.as_slice() {
+        &[a, b, c] => [a, b, c],
+        _ => anyhow::bail!(
+            "unexpected modes shape {:?} for /mvmd/{}",
+            modes_shape,
+            name
+        ),
+    };
+
+    info!(
+        task_name = task_name,
+        group = name,
+        n_modes = n_modes,
+        n_channels = n_channels,
+        n_timepoints = n_timepoints,
+        "computing HHT"
+    );
+
+    let hht_start = Instant::now();
+    let result = compute_hht(cfg, &modes_flat, &modes_shape)?;
+    let hht_duration_ms = hht_start.elapsed().as_millis();
+
+    let write_start = Instant::now();
+    let dest = open_or_create_group(hht_parent, name, cfg.force)?;
+    write_hht(cfg, &dest, &result, cfg.force)?;
+    propagate_roi_indices(&mvmd_sub, &dest)?;
+    let write_duration_ms = write_start.elapsed().as_millis();
+
+    info!(
+        task_name = task_name,
+        group = name,
+        hht_duration_ms = hht_duration_ms,
+        write_duration_ms = write_duration_ms,
+        "HHT complete"
+    );
+
+    Ok(())
+}
+
+/// Iterate `block_*` subgroups under `mvmd_parent/name` and compute HHT for each,
+/// mirroring outputs under `hht_parent/name`.
+fn process_blocks_parent(
+    cfg: &AppConfig,
+    mvmd_parent: &hdf5::Group,
+    hht_parent: &hdf5::Group,
+    name: &str,
+    task_name: &str,
+    error_count: &mut usize,
+) -> Result<()> {
+    let mvmd_blocks = match mvmd_parent.group(name) {
+        Ok(g) => g,
+        Err(_) => {
+            debug!(
+                task_name = task_name,
+                group = name,
+                "mvmd blocks parent missing, skipping"
+            );
+            return Ok(());
+        }
+    };
+
+    let block_names: Vec<String> = mvmd_blocks
+        .member_names()?
+        .into_iter()
+        .filter(|n| n.starts_with("block_"))
+        .collect();
+
+    if block_names.is_empty() {
+        debug!(
+            task_name = task_name,
+            group = name,
+            "no blocks found, skipping"
+        );
+        return Ok(());
+    }
+
+    let hht_blocks = open_or_create_group(hht_parent, name, false)?;
+
+    for block_name in &block_names {
+        if let Err(e) = process_mvmd_modes_group(
+            cfg,
+            &mvmd_blocks,
+            &hht_blocks,
+            block_name,
+            task_name,
+        ) {
+            *error_count += 1;
+            warn!(
+                task_name = task_name,
+                group = name,
+                block = block_name,
+                error = %e,
+                "skipping block HHT due to error"
+            );
+        }
+    }
+
+    info!(
+        task_name = task_name,
+        group = name,
+        num_blocks = block_names.len(),
+        "finished block HHT decompositions"
+    );
 
     Ok(())
 }
@@ -366,12 +432,12 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
     unsafe { std::env::set_var("HDF5_USE_FILE_LOCKING", "FALSE") };
 
     info!(
-        parcellated_ts_dir = %cfg.parcellated_ts_dir.display(),
+        consolidated_data_dir = %cfg.consolidated_data_dir.display(),
         force = cfg.force,
         "starting HHT pipeline (MVMD-based Hilbert-Huang Transform)"
     );
 
-    let subjects: BTreeMap<String, PathBuf> = fs::read_dir(&cfg.parcellated_ts_dir)?
+    let subjects: BTreeMap<String, PathBuf> = fs::read_dir(&cfg.consolidated_data_dir)?
         .filter_map(|entry_result| entry_result.ok())
         .filter_map(|entry| {
             let path = entry.path();
@@ -388,7 +454,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
     info!(num_subjects = total_subjects, "found subject directories");
 
     let mut subject_idx = 0;
-    let mut error_count = 0;
+    let mut error_count: usize = 0;
 
     for (formatted_id, dir) in &subjects {
         subject_idx += 1;
@@ -425,7 +491,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                 let h5_file = open_or_create(file_path)?;
 
                 // MVMD group must exist — this step depends on step 04
-                let mvmd_group = match h5_file.group("mvmd") {
+                let mvmd_group = match h5_file.group("04mvmd") {
                     Ok(g) => g,
                     Err(_) => {
                         debug!(
@@ -436,261 +502,54 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                     }
                 };
 
-                let hht_group = open_or_create_group(&h5_file, "hht", false)?;
-                let hht_std_group = open_or_create_group(&h5_file, "hht_standardized", false)?;
+                let hht_group = open_or_create_group(&h5_file, "05hht", false)?;
 
-                //////////////////////////
-                // Whole-band HHT       //
-                //////////////////////////
-
-                let wb_hht_done = !cfg.force
-                    && hht_group
-                        .group("whole-band")
-                        .map(|g| g.dataset("hilbert_spectrum").is_ok())
-                        .unwrap_or(false);
-                let wb_std_done = !cfg.force
-                    && hht_std_group
-                        .group("whole-band")
-                        .map(|g| g.dataset("hilbert_spectrum").is_ok())
-                        .unwrap_or(false);
-
-                if wb_hht_done && wb_std_done {
-                    debug!(
-                        task_name = task_name,
-                        "whole-band HHT already computed, skipping (use --force to recompute)"
-                    );
-                } else {
-                    match mvmd_group.group("whole-band") {
-                        Err(_) => {
-                            debug!(
-                                task_name = task_name,
-                                "no mvmd/whole-band group found, skipping whole-band HHT"
-                            );
-                        }
-                        Ok(wb_mvmd) => {
-                            let modes_ds = wb_mvmd.dataset("modes")?;
-                            let modes_shape = modes_ds.shape();
-                            let modes_flat: Vec<f32> = modes_ds.read_raw()?;
-
-                            let [n_modes, n_channels, n_timepoints] = match modes_shape.as_slice() {
-                                &[a, b, c] => [a, b, c],
-                                _ => anyhow::bail!("unexpected modes shape {:?}", modes_shape),
-                            };
-
-                            info!(
-                                task_name = task_name,
-                                n_modes = n_modes,
-                                n_channels = n_channels,
-                                n_timepoints = n_timepoints,
-                                "computing whole-band HHT"
-                            );
-
-                            let hht_start = Instant::now();
-                            let result = compute_hht(&modes_flat, &modes_shape)?;
-                            let hht_duration_ms = hht_start.elapsed().as_millis();
-
-                            let write_start = Instant::now();
-                            if !wb_hht_done {
-                                let wb_hht_group =
-                                    open_or_create_group(&hht_group, "whole-band", cfg.force)?;
-                                if !cfg.force && wb_hht_group.dataset("full_spectrum").is_ok() {
-                                    write_dataset(
-                                        &wb_hht_group,
-                                        "hilbert_spectrum",
-                                        &result.hilbert_spectrum,
-                                        &result.hilbert_spectrum_shape,
-                                        Some(&[H5Attr::string(
-                                            "description",
-                                            "2D Hilbert spectrum H(omega,t): energy summed over modes per channel [n_channels, n_freq, n_timepoints]",
-                                        )]),
-                                    )?;
-                                } else {
-                                    write_hht(&wb_hht_group, &result, cfg.force)?;
-                                }
-                            }
-                            if !wb_std_done {
-                                let wb_hht_std_group =
-                                    open_or_create_group(&hht_std_group, "whole-band", cfg.force)?;
-                                if !cfg.force && wb_hht_std_group.dataset("full_spectrum").is_ok() {
-                                    write_dataset(
-                                        &wb_hht_std_group,
-                                        "hilbert_spectrum",
-                                        &result.std_hilbert_spectrum,
-                                        &result.hilbert_spectrum_shape,
-                                        Some(&[H5Attr::string(
-                                            "standardization",
-                                            "zscore_per_channel_across_freq_time",
-                                        )]),
-                                    )?;
-                                } else {
-                                    write_hht_standardized(&wb_hht_std_group, &result, cfg.force)?;
-                                }
-                            }
-                            let write_duration_ms = write_start.elapsed().as_millis();
-
-                            info!(
-                                task_name = task_name,
-                                n_modes = n_modes,
-                                n_channels = n_channels,
-                                n_timepoints = n_timepoints,
-                                hht_duration_ms = hht_duration_ms,
-                                write_duration_ms = write_duration_ms,
-                                output_file = %file_path.display(),
-                                "whole-band HHT complete"
-                            );
-                        }
+                match task_name {
+                    "restAP" => {
+                        // Whole-signal MVMD on all channels
+                        process_mvmd_modes_group(
+                            cfg,
+                            &mvmd_group,
+                            &hht_group,
+                            "full_run_raw",
+                            task_name,
+                        )?;
+                        // Whole-signal MVMD on 28 ROI subset
+                        process_mvmd_modes_group(
+                            cfg,
+                            &mvmd_group,
+                            &hht_group,
+                            "full_run_raw_roi",
+                            task_name,
+                        )?;
                     }
-                }
-
-                //////////////////////////
-                // Block-level HHT      //
-                //////////////////////////
-
-                let mvmd_blocks_group = match mvmd_group.group("blocks") {
-                    Ok(g) => g,
-                    Err(_) => {
+                    "hammerAP" => {
+                        // Per-block MVMD on all channels (face trials only)
+                        process_blocks_parent(
+                            cfg,
+                            &mvmd_group,
+                            &hht_group,
+                            "blocks_raw",
+                            task_name,
+                            &mut error_count,
+                        )?;
+                        // Per-block MVMD on 28 ROI subset
+                        process_blocks_parent(
+                            cfg,
+                            &mvmd_group,
+                            &hht_group,
+                            "blocks_raw_roi",
+                            task_name,
+                            &mut error_count,
+                        )?;
+                    }
+                    other => {
                         debug!(
-                            task_name = task_name,
-                            "no mvmd/blocks group found, skipping block HHT"
+                            task_name = other,
+                            "unrecognized task type, skipping HHT"
                         );
-                        return Ok(());
                     }
-                };
-
-                let block_names: Vec<String> = mvmd_blocks_group
-                    .member_names()?
-                    .into_iter()
-                    .filter(|n| n.starts_with("block_"))
-                    .collect();
-
-                if block_names.is_empty() {
-                    return Ok(());
                 }
-
-                let hht_blocks_group = open_or_create_group(&hht_group, "blocks", false)?;
-                let hht_std_blocks_group = open_or_create_group(&hht_std_group, "blocks", false)?;
-
-                for block_name in &block_names {
-                    let block_hht_done = !cfg.force
-                        && hht_blocks_group
-                            .group(block_name)
-                            .map(|g| g.dataset("hilbert_spectrum").is_ok())
-                            .unwrap_or(false);
-                    let block_std_done = !cfg.force
-                        && hht_std_blocks_group
-                            .group(block_name)
-                            .map(|g| g.dataset("hilbert_spectrum").is_ok())
-                            .unwrap_or(false);
-
-                    if block_hht_done && block_std_done {
-                        debug!(
-                            task_name = task_name,
-                            block = block_name,
-                            "block HHT already computed, skipping (use --force to recompute)"
-                        );
-                        continue;
-                    }
-
-                    let block_mvmd = mvmd_blocks_group.group(block_name)?;
-                    let modes_ds = block_mvmd.dataset("modes")?;
-                    let modes_shape = modes_ds.shape();
-                    let modes_flat: Vec<f32> = modes_ds.read_raw()?;
-
-                    let [n_modes, n_channels, n_timepoints] = match modes_shape.as_slice() {
-                        &[a, b, c] => [a, b, c],
-                        _ => {
-                            error_count += 1;
-                            warn!(
-                                task_name = task_name,
-                                block = block_name,
-                                shape = ?modes_shape,
-                                reason = "unexpected_modes_shape",
-                                "skipping block HHT"
-                            );
-                            continue;
-                        }
-                    };
-
-                    info!(
-                        task_name = task_name,
-                        block = block_name,
-                        n_modes = n_modes,
-                        n_channels = n_channels,
-                        n_timepoints = n_timepoints,
-                        "computing block HHT"
-                    );
-
-                    let hht_start = Instant::now();
-                    let result = match compute_hht(&modes_flat, &modes_shape) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            error_count += 1;
-                            warn!(
-                                task_name = task_name,
-                                block = block_name,
-                                error = %e,
-                                reason = "hht_failed",
-                                "skipping block HHT due to error"
-                            );
-                            continue;
-                        }
-                    };
-                    let hht_duration_ms = hht_start.elapsed().as_millis();
-
-                    let write_start = Instant::now();
-                    if !block_hht_done {
-                        let block_hht_group =
-                            open_or_create_group(&hht_blocks_group, block_name, cfg.force)?;
-                        if !cfg.force && block_hht_group.dataset("full_spectrum").is_ok() {
-                            write_dataset(
-                                &block_hht_group,
-                                "hilbert_spectrum",
-                                &result.hilbert_spectrum,
-                                &result.hilbert_spectrum_shape,
-                                Some(&[H5Attr::string(
-                                    "description",
-                                    "2D Hilbert spectrum H(omega,t): energy summed over modes per channel [n_channels, n_freq, n_timepoints]",
-                                )]),
-                            )?;
-                        } else {
-                            write_hht(&block_hht_group, &result, cfg.force)?;
-                        }
-                    }
-                    if !block_std_done {
-                        let block_hht_std_group =
-                            open_or_create_group(&hht_std_blocks_group, block_name, cfg.force)?;
-                        if !cfg.force && block_hht_std_group.dataset("full_spectrum").is_ok() {
-                            write_dataset(
-                                &block_hht_std_group,
-                                "hilbert_spectrum",
-                                &result.std_hilbert_spectrum,
-                                &result.hilbert_spectrum_shape,
-                                Some(&[H5Attr::string(
-                                    "standardization",
-                                    "zscore_per_channel_across_freq_time",
-                                )]),
-                            )?;
-                        } else {
-                            write_hht_standardized(&block_hht_std_group, &result, cfg.force)?;
-                        }
-                    }
-                    let write_duration_ms = write_start.elapsed().as_millis();
-
-                    debug!(
-                        task_name = task_name,
-                        block = block_name,
-                        n_modes = n_modes,
-                        hht_duration_ms = hht_duration_ms,
-                        write_duration_ms = write_duration_ms,
-                        "block HHT complete"
-                    );
-                }
-
-                info!(
-                    task_name = task_name,
-                    num_blocks = block_names.len(),
-                    "finished block HHT decompositions"
-                );
 
                 Ok(())
             })();

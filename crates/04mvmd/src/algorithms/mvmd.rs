@@ -3,10 +3,10 @@ use ndarray::{Array1, Array2, Array3};
 use polars::prelude::*;
 use rayon::prelude::*;
 use rustfft::{FftPlanner, num_complex::Complex64};
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 /// Initialization method for center frequencies in MVMD/VMD algorithms.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub enum FrequencyInit {
     /// All omegas start at 0
     #[default]
@@ -15,6 +15,8 @@ pub enum FrequencyInit {
     Linear,
     /// Omegas are initialized exponentially distributed
     Exponential,
+    /// Custom initialization directly in normalized frequency space [0, 0.5]
+    Custom(Vec<f64>),
 }
 
 /// A single MVMD mode with its time series data and center frequency.
@@ -87,6 +89,96 @@ impl MVMDResult {
 
         Ok(result)
     }
+
+    /// Maps the converged modes to the closest predefined logarithmic frequency bins.
+    /// Returns a vector of tuples: (Mode Index, Bin Index, Distance to Bin)
+    pub fn map_to_log_bins(
+        &self,
+        f_min: f64,
+        f_max: f64,
+        n_scales: usize,
+    ) -> Vec<(usize, usize, f64)> {
+        // 1. Generate the exact same log-frequencies you used for the CWT
+        let log_freqs: Vec<f64> = (0..n_scales)
+            .map(|i| f_min * (f_max / f_min).powf(i as f64 / (n_scales - 1) as f64))
+            .collect();
+
+        let mut mapped_modes = Vec::new();
+
+        // 2. Iterate through the found center frequencies
+        for (k, &cf) in self.center_frequencies.iter().enumerate() {
+            // Filter out modes outside the frequency bounds
+            if cf < f_min || cf > f_max {
+                continue;
+            }
+
+            // 3. Find the closest log-bin index
+            let mut closest_bin = 0;
+            let mut min_diff = f64::MAX;
+
+            for (bin_idx, &bin_freq) in log_freqs.iter().enumerate() {
+                let diff = (cf - bin_freq).abs();
+                if diff < min_diff {
+                    min_diff = diff;
+                    closest_bin = bin_idx;
+                }
+            }
+
+            mapped_modes.push((k, closest_bin, min_diff));
+        }
+
+        mapped_modes
+    }
+
+    /// Snaps the converged sparse modes into a dense grid of specified size.
+    /// If multiple modes map to the same bin, they are summed.
+    pub fn remap_to_grid(&self, f_min: f64, f_max: f64, n_bins: usize) -> Array3<f64> {
+        let shape = self.modes.shape();
+        let num_modes = shape[0];
+        let num_channels = shape[1];
+        let num_tpoints = shape[2];
+
+        let mut grid_modes = Array3::<f64>::zeros((n_bins, num_channels, num_tpoints));
+        let mappings = self.map_to_log_bins(f_min, f_max, n_bins);
+
+        // Track which modes fall into which bins to detect redundancy
+        let mut bin_assignments: std::collections::HashMap<usize, Vec<usize>> =
+            std::collections::HashMap::new();
+
+        for (k_idx, bin_idx, _) in mappings {
+            bin_assignments
+                .entry(bin_idx)
+                .or_insert_with(Vec::new)
+                .push(k_idx);
+
+            for c in 0..num_channels {
+                for t in 0..num_tpoints {
+                    grid_modes[[bin_idx, c, t]] += self.modes[[k_idx, c, t]];
+                }
+            }
+        }
+
+        // Explicitly log redundant modes needing merging
+        for (bin_idx, mode_indices) in bin_assignments {
+            if mode_indices.len() > 1 {
+                let mode_list = mode_indices
+                    .iter()
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                // Log as warning for researcher visibility
+                warn!(
+                    target_bin = bin_idx,
+                    merged_modes = %mode_list,
+                    reason = "redundant_modes_detected",
+                    "MVMD collision: multiple modes merged into a single frequency bin"
+                );
+            }
+        }
+
+        grid_modes
+    }
 }
 
 /// Multivariate Variational Mode Decomposition (MVMD)
@@ -127,7 +219,7 @@ impl MVMD {
     /// Create a new MVMD instance from a DataFrame.
     ///
     /// The DataFrame should have columns representing channels and rows representing time-points.
-    pub fn from_dataframe(df: &DataFrame, alpha: f64) -> PolarsResult<Self> {
+    pub fn from_dataframe(df: &DataFrame, alpha: f64, sampling_rate: f64) -> PolarsResult<Self> {
         let channel_labels: Vec<String> = df
             .get_column_names()
             .iter()
@@ -169,7 +261,7 @@ impl MVMD {
             num_tpoints,
             alpha,
             init: FrequencyInit::default(),
-            sampling_rate: 1.0,
+            sampling_rate,
             admm_config: ADMMConfig::default(),
         })
     }
@@ -385,7 +477,7 @@ impl MVMD {
             residual_diff /= self.num_tpoints as f64;
 
             // Log progress at INFO level so it's visible, every 10 iterations
-            if n % 10 == 0 || n == 1 {
+            if n % 100 == 0 || n == 1 {
                 info!(
                     iteration = n,
                     max_iterations = self.admm_config.max_iterations,
@@ -409,7 +501,7 @@ impl MVMD {
         debug!("post-processing: ordering results by frequency");
         let mut omega_result: Vec<Vec<f64>> = omega_history
             .iter()
-            .map(|row| row.iter().map(|&w| w / self.sampling_rate).collect())
+            .map(|row| row.iter().map(|&w| w * self.sampling_rate).collect())
             .collect();
 
         // Get sorting indices based on final frequencies
@@ -489,7 +581,7 @@ impl MVMD {
 
     /// Initialize center frequencies based on the chosen method
     fn initialize_omegas(&self, omega: &mut [f64], num_modes: usize) {
-        match self.init {
+        match &self.init {
             FrequencyInit::Zero => {
                 // Already zero-initialized
             }
@@ -503,6 +595,15 @@ impl MVMD {
                     // 0.5 * 10^(-3 + 3*i/(K-1)) for K modes
                     let exponent = -3.0 + 3.0 * i as f64 / (num_modes - 1).max(1) as f64;
                     *w = 0.5 * 10_f64.powf(exponent);
+                }
+            }
+            FrequencyInit::Custom(freqs) => {
+                for (i, w) in omega.iter_mut().enumerate() {
+                    if i < freqs.len() {
+                        // Ensure the provided frequencies are scaled to [0, 0.5]
+                        // based on your sampling rate
+                        *w = freqs[i] / self.sampling_rate;
+                    }
                 }
             }
         }

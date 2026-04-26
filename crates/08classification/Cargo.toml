@@ -12,3 +12,7 @@ polars = { workspace = true }
 polars-io = { workspace = true }
 
 utils = { path = "../utils" }
+rand = "0.8"
+rand_chacha = "0.3"
+serde = { workspace = true }
+serde_json = { workspace = true }

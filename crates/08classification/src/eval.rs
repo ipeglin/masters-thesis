@@ -1,0 +1,138 @@
+//! Shared 3-NN evaluator: stratified row-wise train/test/val split, z-score
+//! normalize using train stats, fit KNN with cosine distance, log accuracy
+//! and confusion matrix for both test and val.
+
+use anyhow::Result;
+use serde::Serialize;
+use std::fs;
+use std::path::Path;
+use tracing::info;
+
+use crate::classifiers::{DistanceMetric, KNN, KnnConfig, accuracy, confusion_matrix_binary};
+use crate::dataset::{FeatureSource, Label};
+use crate::normalizer::ZScoreNormalizer;
+use crate::splits::split_rows_stratified_new;
+
+const SEED: u64 = 42;
+
+#[derive(Debug, Serialize)]
+struct SplitReport {
+    n_samples: usize,
+    accuracy: f32,
+    confusion_matrix: [[u32; 2]; 2],
+}
+
+#[derive(Debug, Serialize)]
+struct ClassificationReport {
+    analysis: String,
+    source: String,
+    split_seed: u64,
+    classifier: String,
+    num_neighbors: usize,
+    metric: String,
+    distance_weighted: bool,
+    n_train: usize,
+    test: SplitReport,
+    val: SplitReport,
+}
+
+fn to_f64(rows: &[Vec<f32>]) -> Vec<Vec<f64>> {
+    rows.iter()
+        .map(|r| r.iter().map(|&v| v as f64).collect())
+        .collect()
+}
+
+fn to_f32(rows: &[Vec<f64>]) -> Vec<Vec<f32>> {
+    rows.iter()
+        .map(|r| r.iter().map(|&v| v as f32).collect())
+        .collect()
+}
+
+/// Stratified row-wise split, train-fit z-score, 3-NN cosine. Logs results
+/// tagged with `analysis` and `source`.
+pub fn eval_knn_three_way_split(
+    xs: &[Vec<f32>],
+    ys: &[Label],
+    analysis: &str,
+    source: FeatureSource,
+    results_dir: &Path,
+) -> Result<()> {
+    let (train_idx, test_idx, val_idx) = split_rows_stratified_new(ys, SEED);
+
+    let take = |idx: &[usize]| -> (Vec<Vec<f32>>, Vec<i32>) {
+        let mut x = Vec::with_capacity(idx.len());
+        let mut y = Vec::with_capacity(idx.len());
+        for &i in idx {
+            x.push(xs[i].clone());
+            y.push(ys[i].as_i32());
+        }
+        (x, y)
+    };
+    let (x_train, y_train) = take(&train_idx);
+    let (x_test, y_test) = take(&test_idx);
+    let (x_val, y_val) = take(&val_idx);
+
+    let normalizer = ZScoreNormalizer::fit(&to_f64(&x_train));
+    let x_train_n = to_f32(&normalizer.transform(&to_f64(&x_train)));
+    let x_test_n = to_f32(&normalizer.transform(&to_f64(&x_test)));
+    let x_val_n = to_f32(&normalizer.transform(&to_f64(&x_val)));
+
+    let mut knn = KNN::new(KnnConfig {
+        num_neighbors: 3,
+        metric: DistanceMetric::Cosine,
+        distance_weighted: false,
+        mahalanobis_shrinkage: 0.0,
+    });
+    knn.fit(x_train_n, y_train.clone())?;
+
+    let test_pred: Vec<i32> = x_test_n.iter().map(|x| knn.predict(x).unwrap_or(-1)).collect();
+    let val_pred: Vec<i32> = x_val_n.iter().map(|x| knn.predict(x).unwrap_or(-1)).collect();
+
+    let test_acc = accuracy(&y_test, &test_pred);
+    let val_acc = accuracy(&y_val, &val_pred);
+    let test_cm = confusion_matrix_binary(&y_test, &test_pred);
+    let val_cm = confusion_matrix_binary(&y_val, &val_pred);
+
+    info!(
+        analysis,
+        source = ?source,
+        n_train = train_idx.len(),
+        n_test = test_idx.len(),
+        n_val = val_idx.len(),
+        test_acc = format!("{:.2}%", test_acc * 100.0),
+        val_acc = format!("{:.2}%", val_acc * 100.0),
+        test_confusion = ?test_cm,
+        val_confusion = ?val_cm,
+        "knn results"
+    );
+
+    fs::create_dir_all(results_dir)?;
+    let source_name = source.dir().to_string();
+    let report = ClassificationReport {
+        analysis: analysis.to_string(),
+        source: source_name.clone(),
+        split_seed: SEED,
+        classifier: "knn".to_string(),
+        num_neighbors: 3,
+        metric: "cosine".to_string(),
+        distance_weighted: false,
+        n_train: train_idx.len(),
+        test: SplitReport {
+            n_samples: test_idx.len(),
+            accuracy: test_acc,
+            confusion_matrix: test_cm,
+        },
+        val: SplitReport {
+            n_samples: val_idx.len(),
+            accuracy: val_acc,
+            confusion_matrix: val_cm,
+        },
+    };
+
+    let out_path = results_dir.join(format!("{}__{}.json", analysis, source_name));
+    let json = serde_json::to_string_pretty(&report)?;
+    fs::write(&out_path, json)?;
+    info!(path = %out_path.display(), "wrote classification report");
+
+    Ok(())
+}

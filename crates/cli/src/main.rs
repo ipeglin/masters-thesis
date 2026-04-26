@@ -39,6 +39,9 @@ enum Command {
         tcp_repo_dir: Option<PathBuf>,
 
         #[arg(long)]
+        csv_output_dir: Option<PathBuf>,
+
+        #[arg(long)]
         tcp_annex_remote: Option<String>,
 
         #[arg(long)]
@@ -49,13 +52,16 @@ enum Command {
     },
     ParcellateBold {
         #[arg(long)]
+        csv_output_dir: Option<PathBuf>,
+
+        #[arg(long)]
         fmriprep_output_dir: Option<PathBuf>,
 
         #[arg(long)]
         subject_filter_dir: Option<PathBuf>,
 
         #[arg(long)]
-        parcellated_ts_dir: Option<PathBuf>,
+        consolidated_data_dir: Option<PathBuf>,
 
         #[arg(long)]
         cortical_atlas: Option<PathBuf>,
@@ -75,7 +81,10 @@ enum Command {
         tcp_repo_dir: Option<PathBuf>,
 
         #[arg(long)]
-        parcellated_ts_dir: Option<PathBuf>,
+        csv_output_dir: Option<PathBuf>,
+
+        #[arg(long)]
+        consolidated_data_dir: Option<PathBuf>,
 
         #[arg(long)]
         task_regressors_output_dir: Option<PathBuf>,
@@ -83,12 +92,15 @@ enum Command {
         #[arg(long, short = 'f')]
         force: bool,
     },
-    DecomposeMvmd {
+    Mvmd {
         #[arg(long)]
         tcp_repo_dir: Option<PathBuf>,
 
         #[arg(long)]
-        parcellated_ts_dir: Option<PathBuf>,
+        csv_output_dir: Option<PathBuf>,
+
+        #[arg(long)]
+        consolidated_data_dir: Option<PathBuf>,
 
         #[arg(long)]
         num_modes: Option<u8>,
@@ -98,21 +110,30 @@ enum Command {
     },
     Cwt {
         #[arg(long)]
-        parcellated_ts_dir: Option<PathBuf>,
+        csv_output_dir: Option<PathBuf>,
+
+        #[arg(long)]
+        consolidated_data_dir: Option<PathBuf>,
 
         #[arg(long, short = 'f')]
         force: bool,
     },
     Hht {
         #[arg(long)]
-        parcellated_ts_dir: Option<PathBuf>,
+        consolidated_data_dir: Option<PathBuf>,
+
+        #[arg(long)]
+        csv_output_dir: Option<PathBuf>,
 
         #[arg(long, short = 'f')]
         force: bool,
     },
     Fc {
         #[arg(long)]
-        parcellated_ts_dir: Option<PathBuf>,
+        consolidated_data_dir: Option<PathBuf>,
+
+        #[arg(long)]
+        csv_output_dir: Option<PathBuf>,
 
         #[arg(long, short = 'f')]
         force: bool,
@@ -120,7 +141,10 @@ enum Command {
     #[cfg(feature = "feature-extraction")]
     FeatureExtraction {
         #[arg(long)]
-        parcellated_ts_dir: Option<PathBuf>,
+        consolidated_data_dir: Option<PathBuf>,
+
+        #[arg(long)]
+        csv_output_dir: Option<PathBuf>,
 
         #[arg(long)]
         cortical_lut: Option<PathBuf>,
@@ -134,25 +158,18 @@ enum Command {
         #[arg(long, short = 'f')]
         force: bool,
     },
-    SplitData {
-        #[arg(long)]
-        subject_filter_dir: Option<PathBuf>,
-
-        #[arg(long)]
-        parcellated_ts_dir: Option<PathBuf>,
-
-        #[arg(long)]
-        data_splitting_dir: Option<PathBuf>,
-
-        #[arg(long, short = 'f')]
-        force: bool,
-    },
     Classify {
         #[arg(long)]
-        parcellated_ts_dir: Option<PathBuf>,
+        consolidated_data_dir: Option<PathBuf>,
+
+        #[arg(long)]
+        csv_output_dir: Option<PathBuf>,
 
         #[arg(long)]
         data_splitting_dir: Option<PathBuf>,
+
+        #[arg(long)]
+        classification_results_dir: Option<PathBuf>,
     },
 }
 
@@ -206,12 +223,16 @@ fn main() -> Result<()> {
     match cli.cmd {
         Command::SelectSubjects {
             tcp_repo_dir,
+            csv_output_dir,
             tcp_annex_remote,
             subject_filter_dir,
             dry_run,
         } => {
             if let Some(v) = tcp_repo_dir {
                 cfg.tcp_repo_dir = v;
+            }
+            if let Some(v) = csv_output_dir {
+                cfg.csv_output_dir = v;
             }
             if let Some(v) = subject_filter_dir {
                 cfg.subject_filter_dir = v;
@@ -227,8 +248,9 @@ fn main() -> Result<()> {
         }
         Command::ParcellateBold {
             fmriprep_output_dir,
+            csv_output_dir,
             subject_filter_dir,
-            parcellated_ts_dir,
+            consolidated_data_dir,
             cortical_atlas,
             subcortical_atlas,
             force,
@@ -237,11 +259,14 @@ fn main() -> Result<()> {
             if let Some(v) = fmriprep_output_dir {
                 cfg.fmriprep_output_dir = v;
             }
+            if let Some(v) = csv_output_dir {
+                cfg.csv_output_dir = v;
+            }
             if let Some(v) = subject_filter_dir {
                 cfg.subject_filter_dir = v;
             }
-            if let Some(v) = parcellated_ts_dir {
-                cfg.parcellated_ts_dir = v;
+            if let Some(v) = consolidated_data_dir {
+                cfg.consolidated_data_dir = v;
             }
             if let Some(v) = cortical_atlas {
                 cfg.cortical_atlas = v;
@@ -260,15 +285,19 @@ fn main() -> Result<()> {
         }
         Command::SegmentTrials {
             tcp_repo_dir,
-            parcellated_ts_dir,
+            csv_output_dir,
+            consolidated_data_dir,
             task_regressors_output_dir,
             force,
         } => {
             if let Some(v) = tcp_repo_dir {
                 cfg.tcp_repo_dir = v;
             }
-            if let Some(v) = parcellated_ts_dir {
-                cfg.parcellated_ts_dir = v;
+            if let Some(v) = csv_output_dir {
+                cfg.csv_output_dir = v;
+            }
+            if let Some(v) = consolidated_data_dir {
+                cfg.consolidated_data_dir = v;
             }
             if let Some(v) = task_regressors_output_dir {
                 cfg.task_regressors_output_dir = v;
@@ -279,17 +308,21 @@ fn main() -> Result<()> {
 
             fmri_segment_trials::run(&cfg)
         }
-        Command::DecomposeMvmd {
+        Command::Mvmd {
             tcp_repo_dir,
-            parcellated_ts_dir,
+            csv_output_dir,
+            consolidated_data_dir,
             num_modes,
             force,
         } => {
             if let Some(v) = tcp_repo_dir {
                 cfg.tcp_repo_dir = v;
             }
-            if let Some(v) = parcellated_ts_dir {
-                cfg.parcellated_ts_dir = v;
+            if let Some(v) = csv_output_dir {
+                cfg.csv_output_dir = v;
+            }
+            if let Some(v) = consolidated_data_dir {
+                cfg.consolidated_data_dir = v;
             }
             if let Some(v) = num_modes {
                 cfg.mvmd.num_modes = v as usize;
@@ -301,11 +334,15 @@ fn main() -> Result<()> {
             mvmd::run(&cfg)
         }
         Command::Cwt {
-            parcellated_ts_dir,
+            consolidated_data_dir,
+            csv_output_dir,
             force,
         } => {
-            if let Some(v) = parcellated_ts_dir {
-                cfg.parcellated_ts_dir = v;
+            if let Some(v) = consolidated_data_dir {
+                cfg.consolidated_data_dir = v;
+            }
+            if let Some(v) = csv_output_dir {
+                cfg.csv_output_dir = v;
             }
             if force {
                 cfg.force = true;
@@ -314,11 +351,15 @@ fn main() -> Result<()> {
             cwt::run(&cfg)
         }
         Command::Hht {
-            parcellated_ts_dir,
+            consolidated_data_dir,
+            csv_output_dir,
             force,
         } => {
-            if let Some(v) = parcellated_ts_dir {
-                cfg.parcellated_ts_dir = v;
+            if let Some(v) = consolidated_data_dir {
+                cfg.consolidated_data_dir = v;
+            }
+            if let Some(v) = csv_output_dir {
+                cfg.csv_output_dir = v;
             }
             if force {
                 cfg.force = true;
@@ -327,11 +368,15 @@ fn main() -> Result<()> {
             hilbert::run(&cfg)
         }
         Command::Fc {
-            parcellated_ts_dir,
+            consolidated_data_dir,
+            csv_output_dir,
             force,
         } => {
-            if let Some(v) = parcellated_ts_dir {
-                cfg.parcellated_ts_dir = v;
+            if let Some(v) = consolidated_data_dir {
+                cfg.consolidated_data_dir = v;
+            }
+            if let Some(v) = csv_output_dir {
+                cfg.csv_output_dir = v;
             }
             if force {
                 cfg.force = true;
@@ -341,14 +386,18 @@ fn main() -> Result<()> {
         }
         #[cfg(feature = "feature-extraction")]
         Command::FeatureExtraction {
-            parcellated_ts_dir,
+            consolidated_data_dir,
+            csv_output_dir,
             cortical_lut,
             subcortical_lut,
             cnn_weights,
             force,
         } => {
-            if let Some(v) = parcellated_ts_dir {
-                cfg.parcellated_ts_dir = v;
+            if let Some(v) = consolidated_data_dir {
+                cfg.consolidated_data_dir = v;
+            }
+            if let Some(v) = csv_output_dir {
+                cfg.csv_output_dir = v;
             }
             if let Some(v) = cortical_lut {
                 cfg.cortical_atlas_lut = v;
@@ -365,36 +414,23 @@ fn main() -> Result<()> {
 
             feature_extraction::run(&cfg)
         }
-        Command::SplitData {
-            subject_filter_dir,
-            parcellated_ts_dir,
-            data_splitting_dir,
-            force,
-        } => {
-            if let Some(v) = subject_filter_dir {
-                cfg.subject_filter_dir = v;
-            }
-            if let Some(v) = parcellated_ts_dir {
-                cfg.parcellated_ts_dir = v;
-            }
-            if let Some(v) = data_splitting_dir {
-                cfg.data_splitting_output_dir = v;
-            }
-            if force {
-                cfg.force = true;
-            }
-
-            data_splitting::run(&cfg)
-        }
         Command::Classify {
-            parcellated_ts_dir,
+            consolidated_data_dir,
+            csv_output_dir,
             data_splitting_dir,
+            classification_results_dir,
         } => {
-            if let Some(v) = parcellated_ts_dir {
-                cfg.parcellated_ts_dir = v;
+            if let Some(v) = consolidated_data_dir {
+                cfg.consolidated_data_dir = v;
+            }
+            if let Some(v) = csv_output_dir {
+                cfg.csv_output_dir = v;
             }
             if let Some(v) = data_splitting_dir {
                 cfg.data_splitting_output_dir = v;
+            }
+            if let Some(v) = classification_results_dir {
+                cfg.classification_results_dir = v;
             }
 
             classification::run(&cfg)

@@ -15,11 +15,100 @@ pub struct BidsFilename {
     pub pairs: Vec<(String, String)>,
     pub suffix: Option<String>,
     pub extension: Option<String>,
+    pub path: Option<PathBuf>,
+    pub parent_directory: Option<PathBuf>,
+}
+
+impl Default for BidsFilename {
+    fn default() -> Self {
+        Self {
+            pairs: Vec::new(),
+            suffix: None,
+            extension: None,
+            path: None,
+            parent_directory: None,
+        }
+    }
 }
 
 impl BidsFilename {
+    /// Creates an empty BidsFilename.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Builder method to add a key-value pair.
+    pub fn with_pair<K, V>(mut self, key: K, value: V) -> Self
+    where
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.pairs.push((key.into(), value.into()));
+        self
+    }
+
+    /// Builder method to set the suffix.
+    pub fn with_suffix<S: Into<String>>(mut self, suffix: S) -> Self {
+        self.suffix = Some(suffix.into());
+        self
+    }
+
+    /// Builder method to set the extension.
+    pub fn with_extension<E: Into<String>>(mut self, extension: E) -> Self {
+        self.extension = Some(extension.into());
+        self
+    }
+
+    /// Reorders the internal pairs based on the provided list of keys.
+    /// Keys not in the list will be moved to the end.
+    pub fn reorder_by_keys(&mut self, order: &[&str]) {
+        self.pairs.sort_by(|(a, _), (b, _)| {
+            let pos_a = order.iter().position(|&k| k == a).unwrap_or(usize::MAX);
+            let pos_b = order.iter().position(|&k| k == b).unwrap_or(usize::MAX);
+            pos_a.cmp(&pos_b)
+        });
+    }
+
     /// Parse a filename string into its BIDS components.
     pub fn parse(s: &str) -> Self {
+        let path = Path::new(s);
+
+        // Check if the filepath itself exists
+        let (stored_path, parent_dir) = if path.exists() {
+            (
+                Some(path.to_path_buf()),
+                path.parent().map(|p| p.to_path_buf()),
+            )
+        } else {
+            (None, None)
+        };
+
+        let (stem, ext) = strip_bids_extension(s);
+        let mut pairs = Vec::new();
+        let mut suffix = None;
+
+        for token in stem.split('_').filter(|t| !t.is_empty()) {
+            match token.find('-') {
+                Some(pos) => pairs.push((token[..pos].to_string(), token[pos + 1..].to_string())),
+                None => suffix = Some(token.to_string()),
+            }
+        }
+
+        Self {
+            pairs,
+            suffix,
+            extension: if ext.is_empty() {
+                None
+            } else {
+                Some(ext.to_string())
+            },
+            path: stored_path,
+            parent_directory: parent_dir,
+        }
+    }
+
+    pub fn from_path_buf(path: &PathBuf) -> Self {
+        let s = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let (stem, ext) = strip_bids_extension(s);
 
         let mut pairs = Vec::new();
@@ -40,6 +129,8 @@ impl BidsFilename {
             } else {
                 Some(ext.to_string())
             },
+            path: Some(path.clone()),
+            parent_directory: path.parent().map(|p| p.to_path_buf()),
         }
     }
 
@@ -67,6 +158,12 @@ impl BidsFilename {
                 .collect(),
             suffix: self.suffix.clone(),
             extension: self.extension.clone(),
+            path: self.path.clone(),
+            parent_directory: self
+                .path
+                .as_ref()
+                .and_then(|p| p.parent())
+                .map(|p| p.to_path_buf()),
         }
     }
 
@@ -81,6 +178,12 @@ impl BidsFilename {
                 .collect(),
             suffix: self.suffix.clone(),
             extension: self.extension.clone(),
+            path: self.path.clone(),
+            parent_directory: self
+                .path
+                .as_ref()
+                .and_then(|p| p.parent())
+                .map(|p| p.to_path_buf()),
         }
     }
 
@@ -105,6 +208,46 @@ impl BidsFilename {
             Some(ext) => format!("{}{}", self.to_stem(), ext),
             None => self.to_stem(),
         }
+    }
+
+    /// Reconstructs the full path by joining the parent directory and the BIDS filename.
+    /// If no parent directory is set, it returns the filename as a relative path.
+    pub fn to_path_buf(&self) -> PathBuf {
+        let filename = self.to_filename();
+
+        match &self.parent_directory {
+            Some(dir) => dir.join(filename),
+            None => PathBuf::from(filename),
+        }
+    }
+
+    /// This enforces that the user must specify a path for file operations.
+    pub fn try_to_path_buf(&self) -> Option<PathBuf> {
+        self.parent_directory
+            .as_ref()
+            .map(|dir| dir.join(self.to_filename()))
+    }
+
+    /// Updates the parent directory in-place.
+    pub fn set_directory<P: AsRef<Path>>(&mut self, path: P) {
+        self.parent_directory = Some(path.as_ref().to_path_buf());
+    }
+
+    /// Returns a new version of the struct with a different parent directory (Builder pattern).
+    pub fn with_directory<P: AsRef<Path>>(mut self, path: P) -> Self {
+        self.parent_directory = Some(path.as_ref().to_path_buf());
+        self
+    }
+
+    /// Checks if the file represented by this BidsFilename exists on the filesystem.
+    /// Note: This checks the reconstructed path (parent_directory + filename).
+    pub fn exists(&self) -> bool {
+        self.to_path_buf().exists()
+    }
+
+    /// Checks if the *original* path (if one was provided via from_path_buf) exists.
+    pub fn original_exists(&self) -> bool {
+        self.path.as_ref().map_or(false, |p| p.exists())
     }
 }
 
@@ -211,9 +354,14 @@ mod tests {
     #[test]
     fn to_stem_no_double_underscores() {
         let f = BidsFilename {
-            pairs: vec![("task".into(), "hammerAP".into()), ("run".into(), "01".into())],
+            pairs: vec![
+                ("task".into(), "hammerAP".into()),
+                ("run".into(), "01".into()),
+            ],
             suffix: Some("bold".into()),
             extension: None,
+            path: None,
+            parent_directory: None,
         };
         assert_eq!(f.to_stem(), "task-hammerAP_run-01_bold");
     }

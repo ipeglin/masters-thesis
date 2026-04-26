@@ -8,10 +8,13 @@ use std::{
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     // Shared IO paths (used by multiple stages)
+    #[serde(default)]
+    pub task_sampling_rate: f64,
     pub tcp_annex_remote: String,
+    pub csv_output_dir: PathBuf,
     pub tcp_repo_dir: PathBuf,
     pub fmriprep_output_dir: PathBuf,
-    pub parcellated_ts_dir: PathBuf,
+    pub consolidated_data_dir: PathBuf,
     pub subject_filter_dir: PathBuf,
     pub task_regressors_output_dir: PathBuf,
     pub cortical_atlas: PathBuf,
@@ -19,6 +22,9 @@ pub struct AppConfig {
     pub cortical_atlas_lut: PathBuf,
     pub subcortical_atlas_lut: PathBuf,
     pub data_splitting_output_dir: PathBuf,
+    /// Directory where classification runners write per-analysis JSON results
+    /// (one file per `<analysis>__<source>.json`) for downstream plotting.
+    pub classification_results_dir: PathBuf,
 
     // Global behavior flags
     #[serde(default)]
@@ -38,9 +44,11 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            task_sampling_rate: 1.25, // TR = 800ms
             tcp_repo_dir: PathBuf::from("/path/to/tcp"),
+            csv_output_dir: PathBuf::from("/path/to/csv"),
             fmriprep_output_dir: PathBuf::from("/path/to/raw_fmri_data"),
-            parcellated_ts_dir: PathBuf::from("/path/to/fmri_timeseries"),
+            consolidated_data_dir: PathBuf::from("/path/to/fmri_timeseries"),
             subject_filter_dir: PathBuf::from("/path/to/subject_filters"),
             task_regressors_output_dir: PathBuf::from("/path/to/glm_conditions"),
             cortical_atlas: PathBuf::from("/path/to/cortical_atlas"),
@@ -48,6 +56,7 @@ impl Default for AppConfig {
             cortical_atlas_lut: PathBuf::from("/path/to/cortical_atlas_lut"),
             subcortical_atlas_lut: PathBuf::from("/path/to/subcortical_atlas_lut"),
             data_splitting_output_dir: PathBuf::from("/path/to/data_split"),
+            classification_results_dir: PathBuf::from("/path/to/classification_results"),
             tcp_annex_remote: String::new(),
             force: false,
             dry_run: false,
@@ -61,7 +70,9 @@ impl Default for AppConfig {
 impl fmt::Display for AppConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "AppConfig:")?;
+        writeln!(f, "  task_sampling_rate: {} Hz", self.task_sampling_rate)?;
         writeln!(f, "  tcp_repo_dir: {}", self.tcp_repo_dir.display())?;
+        writeln!(f, "  cvs_output_dir: {}", self.csv_output_dir.display())?;
         writeln!(
             f,
             "  fmriprep_output_dir: {}",
@@ -69,8 +80,8 @@ impl fmt::Display for AppConfig {
         )?;
         writeln!(
             f,
-            "  parcellated_ts_dir: {}",
-            self.parcellated_ts_dir.display()
+            "  consolidated_data_dir: {}",
+            self.consolidated_data_dir.display()
         )?;
         writeln!(
             f,
@@ -102,6 +113,11 @@ impl fmt::Display for AppConfig {
             f,
             "  data_splitting_output_dir: {}",
             self.data_splitting_output_dir.display()
+        )?;
+        writeln!(
+            f,
+            "  classification_results_dir: {}",
+            self.classification_results_dir.display()
         )?;
         writeln!(f, "  force: {}", self.force)?;
         writeln!(f, "  dry_run: {}", self.dry_run)?;
@@ -147,16 +163,71 @@ impl Default for MvmdParams {
     }
 }
 
+/// Selects which ROI subset to use when building DenseNet input images.
+///
+/// `Subset28` matches the analysis target (vPFC + mPFC + AMY, 28 ROIs across
+/// hemispheres) used in the thesis experiments. `All` uses every parcel in
+/// the concatenated cortical+subcortical layout (~121 ROIs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoiSet {
+    Subset28,
+    All,
+}
+
+impl Default for RoiSet {
+    fn default() -> Self {
+        Self::Subset28
+    }
+}
+
+/// How to coerce a spectrogram (height = 224 frequency bins, width = T time
+/// samples) to the DenseNet-201 expected `224×224` input.
+///
+/// `Pad`: zero-pad the time axis on the right to width 224. Preserves the
+/// original signal granularity exactly — no interpolation.
+///
+/// `Resize`: bilinear upsample/downsample to `224×224`. Compromises granularity
+/// but exposes the full receptive field. Kept as an opt-in for ablation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageFitMode {
+    Pad,
+    Resize,
+}
+
+impl Default for ImageFitMode {
+    fn default() -> Self {
+        Self::Pad
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeatureExtractionParams {
     #[serde(default)]
     pub cnn_weights_path: Option<PathBuf>,
+    #[serde(default)]
+    pub roi_set: RoiSet,
+    /// Apply log1p amplitude compression to HHT spectrograms before min-max
+    /// normalization. Recommended: heavy-tailed Hilbert spectra benefit from
+    /// log compression to preserve granularity in low-amplitude bins.
+    #[serde(default = "default_hht_log_amp")]
+    pub hht_log_amp: bool,
+    #[serde(default)]
+    pub image_fit: ImageFitMode,
+}
+
+fn default_hht_log_amp() -> bool {
+    true
 }
 
 impl Default for FeatureExtractionParams {
     fn default() -> Self {
         Self {
             cnn_weights_path: Some(PathBuf::from("cnn_model_weights/densenet201_imagenet.pt")),
+            roi_set: RoiSet::default(),
+            hht_log_amp: default_hht_log_amp(),
+            image_fit: ImageFitMode::default(),
         }
     }
 }
@@ -174,9 +245,11 @@ mod tests {
     #[test]
     fn parses_flat_shared_fields() {
         let toml = r#"
+            task_sampling_rate = "/tbsr"
+            csv_output_dir = "/c"
             tcp_repo_dir = "/t"
             fmriprep_output_dir = "/f"
-            parcellated_ts_dir = "/b"
+            consolidated_data_dir = "/b"
             subject_filter_dir = "/sf"
             task_regressors_output_dir = "/glm"
             cortical_atlas = "/ca"
@@ -187,7 +260,7 @@ mod tests {
             tcp_annex_remote = "uuid"
         "#;
         let cfg: AppConfig = toml::from_str(toml).unwrap();
-        assert_eq!(cfg.parcellated_ts_dir.to_str().unwrap(), "/b");
+        assert_eq!(cfg.consolidated_data_dir.to_str().unwrap(), "/b");
         assert_eq!(cfg.tcp_repo_dir.to_str().unwrap(), "/t");
         assert!(!cfg.force);
         assert_eq!(cfg.mvmd.num_modes, 10);
@@ -196,9 +269,11 @@ mod tests {
     #[test]
     fn parses_stage_params() {
         let toml = r#"
+            task_sampling_rate = "/tbsr"
+            csv_output_dir = "/c"
             tcp_repo_dir = "/t"
             fmriprep_output_dir = "/f"
-            parcellated_ts_dir = "/b"
+            consolidated_data_dir = "/b"
             subject_filter_dir = "/sf"
             task_regressors_output_dir = "/glm"
             cortical_atlas = "/ca"
