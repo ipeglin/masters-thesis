@@ -108,7 +108,20 @@ else
     log_err "$FETCH_WEIGHTS not found."
 fi
 
-# --- 7. HDF5 & Environment Setup ---
+# --- 7. Fetching Slurm Scripts ---
+log_step "Fetching Slurm Scripts"
+if [ "$IS_IDUN" = true ]; then
+    FETCH_SLURM_SCRIPT="$SCRIPTS_DIR/sys-idun_fetch-slurmjobs.sh"
+    SLURM_TARGET="$PROJECT_ROOT/slurm"
+
+    if [ -f "$FETCH_SLURM_SCRIPT" ]; then
+        chmod +x "$FETCH_SLURM_SCRIPT"
+        bash "$FETCH_SLURM_SCRIPT" "$PROJECT_ROOT" "$SLURM_TARGET"
+    fi
+fi
+
+
+# --- 8. HDF5 & Environment Setup ---
 log_step "Setting up Environment"
 if [ "$IS_IDUN" = true ]; then
     HDF5_INSTALL_DIR="$HOME/hdf5"
