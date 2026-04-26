@@ -21,5 +21,8 @@ build_hdf5.*
 cnn_model_weights/
 atlases/
 
+# Slurm jobs only for IDUN
+slurm/
+
 # planning/tracking notes
 .planning/
