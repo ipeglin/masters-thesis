@@ -32,7 +32,13 @@ fi
 
 # 1. Fetch File List
 API_URL="https://api.github.com/repos/$GH_USER/$GH_REPO/contents/$GH_REMOTE_DIR"
-FILES_JSON=$(curl -s -f "$API_URL")
+log_info "Fetching file list from GitHub..."
+FILES_JSON=$(curl -s -f -H "Cache-Control: no-cache" "$API_URL")
+
+if [ $? -ne 0 ]; then
+    log_err "Failed to fetch directory listing."
+    exit 1
+fi
 
 while read -r DOWNLOAD_URL; do
     if [ -n "$DOWNLOAD_URL" ] && [ "$DOWNLOAD_URL" != "null" ]; then
@@ -42,7 +48,7 @@ while read -r DOWNLOAD_URL; do
         TARGET_FILE="$SLURM_DEST_DIR/$FILENAME"
 
         log_info "Downloading and configuring $FILENAME..."
-        curl -L -s -f "$DOWNLOAD_URL" -o "$TARGET_FILE"
+        curl -L -s -f -H "Cache-Control: no-cache" "$DOWNLOAD_URL" -o "$TARGET_FILE"
 
         if [ $? -eq 0 ]; then
             # --- SCALABLE INJECTION ---
