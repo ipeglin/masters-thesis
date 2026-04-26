@@ -10,6 +10,7 @@ scirs2-signal = "0.4.1"
 hdf5 = { workspace = true }
 ndarray = { workspace = true }
 num-complex = "0.4"
+rayon = { workspace = true }
 # nifti = { workspace = true }
 # polars = { workspace = true }
 # polars-io = { workspace = true }

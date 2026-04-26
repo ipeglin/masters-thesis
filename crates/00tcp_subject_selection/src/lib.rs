@@ -1,14 +1,14 @@
 use anyhow::Result;
-use utils::annex;
-use utils::bids_subject_id::BidsSubjectId;
-use utils::config::AppConfig;
-use utils::polars_csv;
 use git2::Repository;
 use polars::prelude::*;
 use std::fs;
 use std::path::PathBuf;
 use thiserror::Error;
 use tracing::{info, warn};
+use utils::annex;
+use utils::bids_subject_id::BidsSubjectId;
+use utils::config::AppConfig;
+use utils::polars_csv;
 
 #[derive(Error, Debug)]
 pub enum TCPPreprocessError {
@@ -94,7 +94,10 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
     /////////////////////////
 
     let filter_output_dir = &cfg.subject_filter_dir;
+    let csv_output_dir = &cfg.csv_output_dir;
+
     fs::create_dir_all(&filter_output_dir)?;
+    fs::create_dir_all(&csv_output_dir)?;
 
     // Check demos file is available
     let demos_path = dataset_dir.join("phenotype").join("demos.tsv");
@@ -131,7 +134,8 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    write_sorted(filter_output_dir.join("demos.csv"), &demos_df)?;
+    // write_sorted(filter_output_dir.join("demos.csv"), &demos_df)?;
+    // write_sorted(csv_output_dir.join("crate-00_filter-demos.csv"), &demos_df)?;
 
     // General population
     let genpop_df = LazyCsvReader::new(PlPath::from_str(demos_path))
@@ -146,7 +150,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    write_sorted(filter_output_dir.join("genpop.csv"), &genpop_df)?;
+    // write_sorted(filter_output_dir.join("genpop.csv"), &genpop_df)?;
 
     // Major Depressive Disorder (Primary Diagnosis)
     let primary_mdd_df = LazyCsvReader::new(PlPath::from_str(demos_path))
@@ -161,7 +165,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    write_sorted(filter_output_dir.join("primary_mdd.csv"), &primary_mdd_df)?;
+    // write_sorted(filter_output_dir.join("primary_mdd.csv"), &primary_mdd_df)?;
 
     // Major Depressive Disorder (Primary Diagnosis)
     let secondary_mdd_df = LazyCsvReader::new(PlPath::from_str(demos_path))
@@ -176,10 +180,10 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    write_sorted(
-        filter_output_dir.join("secondary_mdd.csv"),
-        &secondary_mdd_df,
-    )?;
+    // write_sorted(
+    //     filter_output_dir.join("secondary_mdd.csv"),
+    //     &secondary_mdd_df,
+    // )?;
 
     /////////////////////////
     // Apply SHAPS Filters //
@@ -243,7 +247,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    write_sorted(filter_output_dir.join("shaps.csv"), &shaps_df)?;
+    // write_sorted(filter_output_dir.join("shaps.csv"), &shaps_df)?;
 
     // Non-anhedonic: computed scores are 0–2
     let non_anhedonic_df = shaps_valid_df
@@ -253,10 +257,10 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    write_sorted(
-        filter_output_dir.join("shaps_non_anhedonic.csv"),
-        &non_anhedonic_df,
-    )?;
+    // write_sorted(
+    //     filter_output_dir.join("shaps_non_anhedonic.csv"),
+    //     &non_anhedonic_df,
+    // )?;
 
     // Anhedonic subjects: computed scores are 3–14
     let shaps_anhedonic_df = shaps_valid_df
@@ -266,10 +270,10 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    write_sorted(
-        filter_output_dir.join("shaps_anhedonic.csv"),
-        &shaps_anhedonic_df,
-    )?;
+    // write_sorted(
+    //     filter_output_dir.join("shaps_anhedonic.csv"),
+    //     &shaps_anhedonic_df,
+    // )?;
 
     // Low-anhedonic subjects: computed scores are 3–14
     let shaps_low_anhedonic_df = shaps_valid_df
@@ -283,10 +287,10 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    write_sorted(
-        filter_output_dir.join("shaps_low_anhedonic.csv"),
-        &shaps_low_anhedonic_df,
-    )?;
+    // write_sorted(
+    //     filter_output_dir.join("shaps_low_anhedonic.csv"),
+    //     &shaps_low_anhedonic_df,
+    // )?;
 
     // High-anhedonic subjects: computed scores are 3–14
     let shaps_high_anhedonic_df = shaps_valid_df
@@ -295,10 +299,10 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    write_sorted(
-        filter_output_dir.join("shaps_high_anhedonic.csv"),
-        &shaps_high_anhedonic_df,
-    )?;
+    // write_sorted(
+    //     filter_output_dir.join("shaps_high_anhedonic.csv"),
+    //     &shaps_high_anhedonic_df,
+    // )?;
 
     ////////////////////////
     // Apply TEPS Filters //
@@ -358,7 +362,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         .lazy()
         .select([col("subjectkey")])
         .collect()?;
-    write_sorted(filter_output_dir.join("teps.csv"), &teps_df)?;
+    // write_sorted(filter_output_dir.join("teps.csv"), &teps_df)?;
 
     // Compute per-participant mean for anticipatory and consummatory scores.
     // Manually compute mean: sum valid scores and divide by count of non-null values
@@ -440,23 +444,23 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    write_sorted(
-        filter_output_dir.join("teps_anticipatory_anhedonic.csv"),
-        &teps_anticipatory_anhedonic_df,
-    )?;
+    // write_sorted(
+    //     filter_output_dir.join("teps_anticipatory_anhedonic.csv"),
+    //     &teps_anticipatory_anhedonic_df,
+    // )?;
 
     // Anticipatory non-anhedonic: scoring at or above the threshold on teps_ant_mean
     let teps_anticipatory_non_anhedonic_df = teps_scored_df
-        .clone()    
+        .clone()
         .lazy()
         .filter(col("teps_ant_mean").gt_eq(lit(ant_threshold)))
         .select([col("subjectkey")])
         .collect()?;
 
-    write_sorted(
-        filter_output_dir.join("teps_anticipatory_non_anhedonic.csv"),
-        &teps_anticipatory_non_anhedonic_df,
-    )?;
+    // write_sorted(
+    //     filter_output_dir.join("teps_anticipatory_non_anhedonic.csv"),
+    //     &teps_anticipatory_non_anhedonic_df,
+    // )?;
 
     // Consummatory anhedonic: scoring more than 2 SD below mean on teps_con_mean
     let teps_consummatory_anhedonic_df = teps_scored_df
@@ -466,10 +470,10 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    write_sorted(
-        filter_output_dir.join("teps_consummatory_anhedonic.csv"),
-        &teps_consummatory_anhedonic_df,
-    )?;
+    // write_sorted(
+    //     filter_output_dir.join("teps_consummatory_anhedonic.csv"),
+    //     &teps_consummatory_anhedonic_df,
+    // )?;
 
     // Consummatory non-anhedonic: scoring at or above the threshold on teps_con_mean
     let teps_consummatory_non_anhedonic_df = teps_scored_df
@@ -478,10 +482,10 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         .select([col("subjectkey")])
         .collect()?;
 
-    write_sorted(
-        filter_output_dir.join("teps_consummatory_non_anhedonic.csv"),
-        &teps_consummatory_non_anhedonic_df,
-    )?;
+    // write_sorted(
+    //     filter_output_dir.join("teps_consummatory_non_anhedonic.csv"),
+    //     &teps_consummatory_non_anhedonic_df,
+    // )?;
 
     //////////////////////////////
     // Raw Data Availability    //
@@ -545,15 +549,15 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         subjects_with_hammer_task,
     )])?;
 
-    write_sorted(
-        filter_output_dir.join("subjects_with_bids_data.csv"),
-        &subjects_with_bids_data_df,
-    )?;
+    // write_sorted(
+    //     filter_output_dir.join("subjects_with_bids_data.csv"),
+    //     &subjects_with_bids_data_df,
+    // )?;
 
-    write_sorted(
-        filter_output_dir.join("subjects_with_hammer_task.csv"),
-        &subjects_with_hammer_task_df,
-    )?;
+    // write_sorted(
+    //     filter_output_dir.join("subjects_with_hammer_task.csv"),
+    //     &subjects_with_hammer_task_df,
+    // )?;
 
     /////////////////////
     // Combine Filters //
@@ -583,10 +587,10 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
             None,
         )?;
 
-    write_sorted(
-        filter_output_dir.join("healthy_controls_without_raw_data.csv"),
-        &healthy_controls_df,
-    )?;
+    // write_sorted(
+    //     filter_output_dir.join("healthy_controls_without_raw_data.csv"),
+    //     &healthy_controls_df,
+    // )?;
 
     let healthy_controls_df = healthy_controls_df.join(
         &subjects_with_hammer_task_df,
@@ -596,9 +600,10 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         None,
     )?;
 
+    write_sorted(filter_output_dir.join("controls.csv"), &healthy_controls_df)?;
     write_sorted(
-        filter_output_dir.join("healthy_controls.csv"),
-        &healthy_controls_df,
+        csv_output_dir.join("crate-00_filter-controls.csv"),
+        &demos_df,
     )?;
 
     // Major Depressive Disorder
@@ -615,7 +620,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         .drop(cols(["subjectkey_right"]))
         .collect()?;
 
-    write_sorted(filter_output_dir.join("mdd.csv"), &mdd_df)?;
+    // write_sorted(filter_output_dir.join("mdd.csv"), &mdd_df)?;
 
     // All anhedonic subjects: union of SHAPS anhedonic, TEPS-ANT anhedonic, TEPS-CON anhedonic
     let anhedonic_df = shaps_anhedonic_df
@@ -643,10 +648,10 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         .unique(Some(cols(["subjectkey"])), UniqueKeepStrategy::Any)
         .collect()?;
 
-    write_sorted(
-        filter_output_dir.join("anhedonic_without_raw_data.csv"),
-        &anhedonic_df,
-    )?;
+    // write_sorted(
+    //     filter_output_dir.join("anhedonic_without_raw_data.csv"),
+    //     &anhedonic_df,
+    // )?;
 
     let anhedonic_df = anhedonic_df.join(
         &subjects_with_hammer_task_df,
@@ -657,6 +662,10 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
     )?;
 
     write_sorted(filter_output_dir.join("anhedonic.csv"), &anhedonic_df)?;
+    write_sorted(
+        csv_output_dir.join("crate-00_filter-anhedonic.csv"),
+        &demos_df,
+    )?;
 
     Ok(())
 }

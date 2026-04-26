@@ -1,15 +1,20 @@
 # Flat AppConfig. All shared IO paths at top level. Stage-specific algorithm
 # params go under their [stage] table below.
 
+# Scanning parameters
+task_sampling_rate = 1.25
+
 tcp_annex_remote = "9cee7da3-a848-4b59-b8ff-d7848f2ad864" # Git annex remote
 
 # Directories
 tcp_repo_dir = ""
+csv_output_dir = ""
 fmriprep_output_dir = ""
-parcellated_ts_dir = ""
+consolidated_data_dir = ""
 subject_filter_dir = ""
 task_regressors_output_dir = ""
 data_splitting_output_dir = ""
+classification_results_dir = ""
 
 # Atlas Files
 cortical_atlas = ""
@@ -25,7 +30,7 @@ dry_run = false
 voxelwise_zscore = false
 
 [mvmd]
-num_modes = 10
+num_modes = 12
 
 [feature_extraction]
 cnn_weights_path = ""

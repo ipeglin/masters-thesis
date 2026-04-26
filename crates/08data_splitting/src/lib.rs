@@ -2,9 +2,9 @@ use std::{collections::HashSet, fs, path::Path, time::Instant};
 
 use anyhow::{Context, Result};
 use polars::prelude::*;
-use rand::SeedableRng;
 use rand::seq::IteratorRandom;
 use rand::seq::SliceRandom;
+use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use tracing::{debug, info, warn};
 use utils::bids_subject_id::BidsSubjectId;
@@ -32,12 +32,12 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
     let run_start = Instant::now();
 
     info!(
-        parcellated_ts_dir = %cfg.parcellated_ts_dir.display(),
+        consolidated_data_dir = %cfg.consolidated_data_dir.display(),
         force = cfg.force,
         "starting data splitting pipeline"
     );
 
-    let fmriprep_output_dir = &cfg.parcellated_ts_dir;
+    let fmriprep_output_dir = &cfg.consolidated_data_dir;
     let subject_directories: HashSet<String> = fs::read_dir(fmriprep_output_dir)?
         .filter_map(|entry_result| entry_result.ok())
         .filter_map(|entry| {
@@ -56,7 +56,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
 
     let filter_dir = &cfg.subject_filter_dir;
 
-    let controls_file = filter_dir.join("healthy_controls.csv");
+    let controls_file = filter_dir.join("controls.csv");
     let control_subjects: Vec<String> = polars_csv::read_dataframe(&controls_file)
         .with_context(|| format!("failed to read {}", controls_file.display()))?
         .column("subjectkey")?

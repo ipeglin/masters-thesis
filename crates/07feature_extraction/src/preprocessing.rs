@@ -1,0 +1,123 @@
+//! DenseNet-201 input preparation for time-frequency images.
+//!
+//! Standard torchvision DenseNet-201 expects per-channel normalized RGB:
+//!   1. Pixel values in `[0, 1]` (float).
+//!   2. Per-channel ImageNet mean/std applied — final tensor in roughly
+//!      `[-2.1, +2.6]`.
+//!
+//! Pipeline per spectrogram (`[F, T]`, F=224 frequency bins):
+//!   raw → optional `log1p` (HHT) → per-image min-max → `[0, 1]` →
+//!   fit to `224×224` (zero-pad time axis or bilinear resize, per config) →
+//!   replicate channel to `[3, 224, 224]` → ImageNet normalize →
+//!   `[1, 3, 224, 224]`.
+
+use tch::{Kind, Tensor};
+use utils::config::ImageFitMode;
+
+const TARGET_H: i64 = 224;
+const TARGET_W: i64 = 224;
+const IMAGENET_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
+const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
+
+/// Convert one grayscale spectrogram `[F, T]` to a DenseNet-ready tensor
+/// `[1, 3, 224, 224]`.
+///
+/// `log_amp` applies `log1p` before normalization to compress the heavy tail
+/// of Hilbert-Huang spectra so low-amplitude bins keep their granularity in
+/// the [0, 1] range. `fit` controls how a non-`224x224` spectrogram is coerced
+/// to the DenseNet input size.
+pub fn spectrum_to_image(spec: &Tensor, log_amp: bool, fit: ImageFitMode) -> Tensor {
+    let s = if log_amp { spec.log1p() } else { spec.shallow_clone() };
+    let min = s.min();
+    let max = s.max();
+    let normalised = (&s - &min) / (&max - &min + 1e-8);
+
+    let img = normalised.unsqueeze(0).unsqueeze(0);
+    let img = match fit {
+        ImageFitMode::Resize => img.upsample_bilinear2d(&[TARGET_H, TARGET_W], false, None, None),
+        ImageFitMode::Pad => pad_to(&img, TARGET_H, TARGET_W),
+    };
+    let img = img.expand(&[1, 3, TARGET_H, TARGET_W], false).contiguous();
+
+    let device = img.device();
+    let mean = Tensor::from_slice(&IMAGENET_MEAN)
+        .reshape([1, 3, 1, 1])
+        .to_kind(Kind::Float)
+        .to_device(device);
+    let std = Tensor::from_slice(&IMAGENET_STD)
+        .reshape([1, 3, 1, 1])
+        .to_kind(Kind::Float)
+        .to_device(device);
+    (img - mean) / std
+}
+
+/// Stack per-ROI spectrograms into a single DenseNet input batch.
+///
+/// Input  `[n_rois, F, T]`. Output `[n_rois, 3, 224, 224]`.
+pub fn batch_spectrum_to_input(rois_spec: &Tensor, log_amp: bool, fit: ImageFitMode) -> Tensor {
+    let n = rois_spec.size()[0];
+    let images: Vec<Tensor> = (0..n)
+        .map(|i| spectrum_to_image(&rois_spec.select(0, i), log_amp, fit))
+        .collect();
+    Tensor::cat(&images, 0)
+}
+
+/// Right- and bottom-pad a `[1, 1, H, W]` tensor with zeros to `[1, 1, target_h, target_w]`.
+/// Inputs already meeting/exceeding either target dim are passed through on that axis.
+fn pad_to(img: &Tensor, target_h: i64, target_w: i64) -> Tensor {
+    let dims = img.size();
+    let cur_h = dims[2];
+    let cur_w = dims[3];
+    let pad_h = (target_h - cur_h).max(0);
+    let pad_w = (target_w - cur_w).max(0);
+    if pad_h == 0 && pad_w == 0 {
+        return img.shallow_clone();
+    }
+    // `Tensor::pad` order is (left, right, top, bottom).
+    img.pad(&[0, pad_w, 0, pad_h], "constant", Some(0.0))
+}
+
+/// Trim time axis to `n_chunks * (T / n_chunks)` and split into equal-width chunks.
+///
+/// Input `[n_rois, F, T]`. Output: vector of length `n_chunks`, each
+/// `[n_rois, F, T / n_chunks]`. Trailing `T mod n_chunks` columns are dropped
+/// from the tail so all chunks have identical width.
+pub fn chunk_along_time(spec: &Tensor, n_chunks: i64) -> Vec<Tensor> {
+    let dims = spec.size();
+    let t = dims[2];
+    let chunk_w = t / n_chunks;
+    let trim_w = chunk_w * n_chunks;
+    let trimmed = spec.narrow(2, 0, trim_w);
+    (0..n_chunks)
+        .map(|i| trimmed.narrow(2, i * chunk_w, chunk_w).contiguous())
+        .collect()
+}
+
+/// Stack-and-mean a sequence of equally-shaped spectrograms.
+pub fn stack_and_mean(specs: &[Tensor]) -> Tensor {
+    Tensor::stack(specs, 0).mean_dim(Some([0i64].as_slice()), false, Kind::Float)
+}
+
+/// Concatenate per-block spectrograms along time after a deterministic shuffle.
+///
+/// Each `blocks[i]` shape `[n_rois, F, T_i]`. Output `[n_rois, F, sum(T_i)]`.
+pub fn shuffled_concat(blocks: Vec<Tensor>, seed: u64) -> Tensor {
+    use rand::SeedableRng;
+    use rand::seq::SliceRandom;
+    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(seed);
+    let mut shuffled = blocks;
+    shuffled.shuffle(&mut rng);
+    let refs: Vec<&Tensor> = shuffled.iter().collect();
+    Tensor::cat(&refs, 2)
+}
+
+/// Trim each block's time axis to `target_w` (drop trailing columns), then
+/// stack-mean across blocks. Blocks shorter than `target_w` are skipped.
+pub fn trim_and_mean_blocks(blocks: &[Tensor], target_w: i64) -> Tensor {
+    let trimmed: Vec<Tensor> = blocks
+        .iter()
+        .filter(|b| b.size()[2] >= target_w)
+        .map(|b| b.narrow(2, 0, target_w).contiguous())
+        .collect();
+    stack_and_mean(&trimmed)
+}
