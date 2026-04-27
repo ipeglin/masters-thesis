@@ -1,6 +1,6 @@
-//! Shared 3-NN evaluator: stratified row-wise train/test/val split, z-score
-//! normalize using train stats, fit KNN with cosine distance, log accuracy
-//! and confusion matrix for both test and val.
+//! Shared KNN evaluator: stratified row-wise train/test/val split, z-score
+//! normalize using train stats, fit KNN with the configured distance, log
+//! accuracy and confusion matrix for both test and val.
 
 use anyhow::Result;
 use serde::Serialize;
