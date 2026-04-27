@@ -190,7 +190,7 @@ impl Default for RoiSet {
 /// `Pad`: zero-pad the time axis on the right to width 224. Preserves the
 /// original signal granularity exactly — no interpolation.
 ///
-/// `Resize`: bilinear upsample/downsample to `224×224`. Compromises granularity
+/// `Resize`: bicubic upsample/downsample to `224×224`. Compromises granularity
 /// but exposes the full receptive field. Kept as an opt-in for ablation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

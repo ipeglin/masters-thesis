@@ -27,8 +27,8 @@ use utils::hdf5_io::{H5Attr, open_or_create_group, write_attrs, write_dataset};
 
 use crate::FeatureExtractor;
 use crate::preprocessing::{
-    batch_spectrum_to_input, chunk_along_time, shuffled_concat, stack_and_mean,
-    trim_and_mean_blocks,
+    batch_spectrum_to_input, chunk_along_time, resize_and_mean_blocks, shuffled_concat,
+    stack_and_mean, trim_and_mean_blocks,
 };
 
 pub const CHUNK_COUNT: i64 = 3;
@@ -244,6 +244,26 @@ fn extract(ctx: &AnalysisCtx, src: FeatureSrc, spec: &Tensor) -> (Tensor, Tensor
     (per_roi, mean)
 }
 
+/// Variant of `extract` that forces an explicit `ImageFitMode`, ignoring
+/// `ctx.fit`. Used only by the resize-baseline strategy so existing analyses
+/// keep using the configured (pad) fit unchanged.
+fn extract_with_fit(
+    ctx: &AnalysisCtx,
+    src: FeatureSrc,
+    spec: &Tensor,
+    fit: ImageFitMode,
+) -> (Tensor, Tensor) {
+    let log_amp = ctx.log_amp_for(src);
+    let batch = batch_spectrum_to_input(spec, log_amp, fit);
+    let per_roi = ctx
+        .extractor
+        .extract_features(&batch)
+        .to_kind(Kind::Float)
+        .to_device(tch::Device::Cpu);
+    let mean = per_roi.mean_dim(Some([0i64].as_slice()), false, Kind::Float);
+    (per_roi, mean)
+}
+
 fn tensor_to_vec_f32(t: &Tensor) -> Vec<f32> {
     let flat = t
         .to_kind(Kind::Float)
@@ -397,6 +417,83 @@ pub fn run_baseline_averaged(
 }
 
 // ---------------------------------------------------------------------------
+// Strategy F — restAP, baseline image-resized (no chunking)
+// ---------------------------------------------------------------------------
+
+/// Use the full-run spectrum directly (no time-axis chunking). Each ROI image
+/// is bicubicly resized from `[224, T_full]` → `[224, 224]` by forcing
+/// `ImageFitMode::Resize`, regardless of `ctx.fit`. One DenseNet image per
+/// ROI. Written under `features/<src>/baseline_resized`.
+pub fn run_baseline_resized(
+    ctx: &AnalysisCtx,
+    features_root: &hdf5::Group,
+    src: FeatureSrc,
+    full_spec: &Tensor,
+) -> Result<()> {
+    let analysis = "baseline_resized";
+    let src_g = open_or_create_group(features_root, src.group_name(), false)?;
+    if already_done(&src_g, analysis, ctx.force) {
+        debug!(src = src.group_name(), "baseline_resized: exists, skipping");
+        return Ok(());
+    }
+    let started = Instant::now();
+    let (per_roi, mean) = extract_with_fit(ctx, src, full_spec, ImageFitMode::Resize);
+    write_features_resized(&src_g, analysis, &per_roi, &mean, ctx, analysis)?;
+    info!(
+        src = src.group_name(),
+        ms = started.elapsed().as_millis() as u64,
+        "baseline_resized done"
+    );
+    Ok(())
+}
+
+/// Mirror of `write_features` but hard-codes the `image_fit` attribute to
+/// `"resize"` so the on-disk metadata reflects the actual fit applied by
+/// `run_baseline_resized`, irrespective of `ctx.fit`.
+fn write_features_resized(
+    parent: &hdf5::Group,
+    leaf_name: &str,
+    per_roi: &Tensor,
+    mean: &Tensor,
+    ctx: &AnalysisCtx,
+    analysis: &str,
+) -> Result<()> {
+    let group = open_or_create_group(parent, leaf_name, ctx.force)?;
+    let per_roi_shape = per_roi.size();
+    let (n_rois, feat_dim) = match per_roi_shape.as_slice() {
+        &[r, d] => (r as usize, d as usize),
+        _ => anyhow::bail!("unexpected per_roi shape {:?}", per_roi_shape),
+    };
+    if ctx.roi_indices.len() != n_rois {
+        anyhow::bail!(
+            "roi_indices.len {} != per_roi rows {}",
+            ctx.roi_indices.len(),
+            n_rois
+        );
+    }
+    let per_roi_buf = tensor_to_vec_f32(per_roi);
+    let mean_buf = tensor_to_vec_f32(mean);
+    let roi_idx_u32: Vec<u32> = ctx.roi_indices.iter().map(|&i| i as u32).collect();
+    write_dataset(&group, "per_roi", &per_roi_buf, &[n_rois, feat_dim], None)?;
+    write_dataset(&group, "mean", &mean_buf, &[feat_dim], None)?;
+    write_dataset(&group, "roi_indices", &roi_idx_u32, &[n_rois], None)?;
+    write_attrs(
+        &group,
+        &[
+            H5Attr::string("labels", ctx.roi_labels_joined),
+            H5Attr::u32("n_rois", n_rois as u32),
+            H5Attr::u32("feature_dim", feat_dim as u32),
+            H5Attr::string("subject_id", ctx.subject_id),
+            H5Attr::string("task", ctx.task_name),
+            H5Attr::string("analysis", analysis),
+            H5Attr::string("roi_set", roi_set_label(ctx.roi_set)),
+            H5Attr::string("image_fit", image_fit_label(ImageFitMode::Resize)),
+        ],
+    )?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Strategy C — hammerAP, task concat (shuffled)
 // ---------------------------------------------------------------------------
 
@@ -514,6 +611,77 @@ pub fn run_task_averaged(
 }
 
 // ---------------------------------------------------------------------------
+// Strategy G — hammerAP, per face-block image-resized
+// ---------------------------------------------------------------------------
+
+/// One DenseNet input per face block per ROI, but each block image is
+/// bicubicly resized from `[224, T_block]` → `[224, 224]` instead of being
+/// zero-padded. Written under
+/// `features/<src>/task_per_block_resized/<block_name>`.
+pub fn run_task_per_block_resized(
+    ctx: &AnalysisCtx,
+    features_root: &hdf5::Group,
+    src: FeatureSrc,
+    blocks: &[(String, Tensor)],
+) -> Result<()> {
+    let analysis = "task_per_block_resized";
+    let root = analysis_root(features_root, src, analysis, ctx.force)?;
+    let started = Instant::now();
+    for (name, block) in blocks {
+        if already_done(&root, name, ctx.force) {
+            debug!(src = src.group_name(), %name, "task_per_block_resized: exists, skipping");
+            continue;
+        }
+        let (per_roi, mean) = extract_with_fit(ctx, src, block, ImageFitMode::Resize);
+        write_features_resized(&root, name, &per_roi, &mean, ctx, analysis)?;
+    }
+    info!(
+        src = src.group_name(),
+        n_blocks = blocks.len(),
+        ms = started.elapsed().as_millis() as u64,
+        "task_per_block_resized done"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Strategy H — hammerAP, image-resized blocks averaged
+// ---------------------------------------------------------------------------
+
+/// Bicubicly resize each block's raw spectrum to `224×224`, mean across
+/// blocks per ROI, then run the averaged image through DenseNet. Written
+/// under `features/<src>/task_averaged_resized`.
+pub fn run_task_averaged_resized(
+    ctx: &AnalysisCtx,
+    features_root: &hdf5::Group,
+    src: FeatureSrc,
+    blocks: &[(String, Tensor)],
+) -> Result<()> {
+    let analysis = "task_averaged_resized";
+    let src_g = open_or_create_group(features_root, src.group_name(), false)?;
+    if already_done(&src_g, analysis, ctx.force) {
+        debug!(src = src.group_name(), "task_averaged_resized: exists, skipping");
+        return Ok(());
+    }
+    if blocks.is_empty() {
+        debug!(src = src.group_name(), "task_averaged_resized: no blocks");
+        return Ok(());
+    }
+    let block_tensors: Vec<Tensor> = blocks.iter().map(|(_, t)| t.shallow_clone()).collect();
+    let avg = resize_and_mean_blocks(&block_tensors, 224, 224);
+    let started = Instant::now();
+    let (per_roi, mean) = extract_with_fit(ctx, src, &avg, ImageFitMode::Resize);
+    write_features_resized(&src_g, analysis, &per_roi, &mean, ctx, analysis)?;
+    info!(
+        src = src.group_name(),
+        n_blocks = blocks.len(),
+        ms = started.elapsed().as_millis() as u64,
+        "task_averaged_resized done"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Per-task driver
 // ---------------------------------------------------------------------------
 
@@ -531,12 +699,14 @@ pub fn run_for_file(ctx: &AnalysisCtx, h5: &hdf5::File) -> Result<()> {
             if let Some(spec) = load_cwt_full_run(h5, ctx)? {
                 run_baseline_chunked(ctx, &features_root, FeatureSrc::Cwt, &spec)?;
                 run_baseline_averaged(ctx, &features_root, FeatureSrc::Cwt, &spec)?;
+                run_baseline_resized(ctx, &features_root, FeatureSrc::Cwt, &spec)?;
             } else {
                 debug!("restAP: no CWT full_run_std, skipping CWT analyses");
             }
             if let Some(spec) = load_hht_full_run(h5, ctx)? {
                 run_baseline_chunked(ctx, &features_root, FeatureSrc::Hht, &spec)?;
                 run_baseline_averaged(ctx, &features_root, FeatureSrc::Hht, &spec)?;
+                run_baseline_resized(ctx, &features_root, FeatureSrc::Hht, &spec)?;
             } else {
                 debug!("restAP: no HHT full_run, skipping HHT analyses");
             }
@@ -547,6 +717,8 @@ pub fn run_for_file(ctx: &AnalysisCtx, h5: &hdf5::File) -> Result<()> {
                 run_task_concat(ctx, &features_root, FeatureSrc::Cwt, &cwt_blocks)?;
                 run_task_per_block(ctx, &features_root, FeatureSrc::Cwt, &cwt_blocks)?;
                 run_task_averaged(ctx, &features_root, FeatureSrc::Cwt, &cwt_blocks)?;
+                run_task_per_block_resized(ctx, &features_root, FeatureSrc::Cwt, &cwt_blocks)?;
+                run_task_averaged_resized(ctx, &features_root, FeatureSrc::Cwt, &cwt_blocks)?;
             } else {
                 debug!("hammerAP: no CWT blocks_std, skipping CWT analyses");
             }
@@ -555,6 +727,8 @@ pub fn run_for_file(ctx: &AnalysisCtx, h5: &hdf5::File) -> Result<()> {
                 run_task_concat(ctx, &features_root, FeatureSrc::Hht, &hht_blocks)?;
                 run_task_per_block(ctx, &features_root, FeatureSrc::Hht, &hht_blocks)?;
                 run_task_averaged(ctx, &features_root, FeatureSrc::Hht, &hht_blocks)?;
+                run_task_per_block_resized(ctx, &features_root, FeatureSrc::Hht, &hht_blocks)?;
+                run_task_averaged_resized(ctx, &features_root, FeatureSrc::Hht, &hht_blocks)?;
             } else {
                 debug!("hammerAP: no HHT blocks, skipping HHT analyses");
             }

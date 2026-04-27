@@ -7,7 +7,7 @@
 //!
 //! Pipeline per spectrogram (`[F, T]`, F=224 frequency bins):
 //!   raw → optional `log1p` (HHT) → per-image min-max → `[0, 1]` →
-//!   fit to `224×224` (zero-pad time axis or bilinear resize, per config) →
+//!   fit to `224×224` (zero-pad time axis or bicubic resize, per config) →
 //!   replicate channel to `[3, 224, 224]` → ImageNet normalize →
 //!   `[1, 3, 224, 224]`.
 
@@ -27,14 +27,18 @@ const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
 /// the [0, 1] range. `fit` controls how a non-`224x224` spectrogram is coerced
 /// to the DenseNet input size.
 pub fn spectrum_to_image(spec: &Tensor, log_amp: bool, fit: ImageFitMode) -> Tensor {
-    let s = if log_amp { spec.log1p() } else { spec.shallow_clone() };
+    let s = if log_amp {
+        spec.log1p()
+    } else {
+        spec.shallow_clone()
+    };
     let min = s.min();
     let max = s.max();
     let normalised = (&s - &min) / (&max - &min + 1e-8);
 
     let img = normalised.unsqueeze(0).unsqueeze(0);
     let img = match fit {
-        ImageFitMode::Resize => img.upsample_bilinear2d(&[TARGET_H, TARGET_W], false, None, None),
+        ImageFitMode::Resize => img.upsample_bicubic2d(&[TARGET_H, TARGET_W], false, None, None),
         ImageFitMode::Pad => pad_to(&img, TARGET_H, TARGET_W),
     };
     let img = img.expand(&[1, 3, TARGET_H, TARGET_W], false).contiguous();
@@ -120,4 +124,24 @@ pub fn trim_and_mean_blocks(blocks: &[Tensor], target_w: i64) -> Tensor {
         .map(|b| b.narrow(2, 0, target_w).contiguous())
         .collect();
     stack_and_mean(&trimmed)
+}
+
+/// Bicubicly resize each per-ROI raw spectrum from `[F, T]` to
+/// `[target_h, target_w]`. Input `[n_rois, F, T]` → output
+/// `[n_rois, target_h, target_w]`. Used by resized-block strategies that need
+/// to bring face blocks to a common 224×224 footprint before stack-mean.
+pub fn resize_along_freq_time(spec: &Tensor, target_h: i64, target_w: i64) -> Tensor {
+    spec.unsqueeze(1)
+        .upsample_bicubic2d(&[target_h, target_w], false, None, None)
+        .squeeze_dim(1)
+}
+
+/// Resize each block's raw spectrum to `[target_h, target_w]` then stack-mean
+/// across blocks. Empty input returns an empty mean (caller should guard).
+pub fn resize_and_mean_blocks(blocks: &[Tensor], target_h: i64, target_w: i64) -> Tensor {
+    let resized: Vec<Tensor> = blocks
+        .iter()
+        .map(|b| resize_along_freq_time(b, target_h, target_w).contiguous())
+        .collect();
+    stack_and_mean(&resized)
 }

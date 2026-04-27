@@ -44,9 +44,12 @@ impl std::str::FromStr for FeatureSource {
 pub enum AnalysisKind {
     BaselineChunked,
     BaselineAveraged,
+    BaselineResized,
     TaskConcat,
     TaskPerBlock,
+    TaskPerBlockResized,
     TaskAveraged,
+    TaskAveragedResized,
 }
 
 impl AnalysisKind {
@@ -54,21 +57,28 @@ impl AnalysisKind {
         match self {
             Self::BaselineChunked => "baseline_chunked",
             Self::BaselineAveraged => "baseline_averaged",
+            Self::BaselineResized => "baseline_resized",
             Self::TaskConcat => "task_concat",
             Self::TaskPerBlock => "task_per_block",
+            Self::TaskPerBlockResized => "task_per_block_resized",
             Self::TaskAveraged => "task_averaged",
+            Self::TaskAveragedResized => "task_averaged_resized",
         }
     }
 
     pub const fn task(self) -> &'static str {
         match self {
-            Self::BaselineChunked | Self::BaselineAveraged => "restAP",
-            Self::TaskConcat | Self::TaskPerBlock | Self::TaskAveraged => "hammerAP",
+            Self::BaselineChunked | Self::BaselineAveraged | Self::BaselineResized => "restAP",
+            Self::TaskConcat
+            | Self::TaskPerBlock
+            | Self::TaskPerBlockResized
+            | Self::TaskAveraged
+            | Self::TaskAveragedResized => "hammerAP",
         }
     }
 
     pub const fn is_multi_leaf(self) -> bool {
-        matches!(self, Self::BaselineChunked | Self::TaskPerBlock)
+        matches!(self, Self::BaselineChunked | Self::TaskPerBlock | Self::TaskPerBlockResized)
     }
 }
 
@@ -169,7 +179,7 @@ pub fn list_analysis_leaves(
     }
     let prefix = match kind {
         AnalysisKind::BaselineChunked => "chunk_",
-        AnalysisKind::TaskPerBlock => "block_",
+        AnalysisKind::TaskPerBlock | AnalysisKind::TaskPerBlockResized => "block_",
         _ => unreachable!(),
     };
     let mut names: Vec<String> = group
