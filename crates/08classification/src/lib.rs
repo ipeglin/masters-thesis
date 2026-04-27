@@ -1,15 +1,14 @@
-pub mod baseline;
-pub mod baseline_averaging;
-pub mod block_ensemble;
+pub mod analyses;
 pub mod classifiers;
 pub mod dataset;
 pub mod eval;
-pub mod face_block_averaging;
-pub mod face_block_concatenation;
 pub mod normalizer;
 pub mod splits;
-pub mod subject_stratified;
-pub mod task_block;
+
+use crate::analyses::{
+    baseline, baseline_averaging, block_ensemble, face_block_averaging, face_block_concatenation,
+    subject_stratified, task_block,
+};
 
 use anyhow::Result;
 use utils::config::AppConfig;
