@@ -377,7 +377,10 @@ pub fn run_baseline_averaged(
     let analysis = "baseline_averaged";
     let src_g = open_or_create_group(features_root, src.group_name(), false)?;
     if already_done(&src_g, analysis, ctx.force) {
-        debug!(src = src.group_name(), "baseline_averaged: exists, skipping");
+        debug!(
+            src = src.group_name(),
+            "baseline_averaged: exists, skipping"
+        );
         return Ok(());
     }
     let chunks = chunk_along_time(full_spec, CHUNK_COUNT);
@@ -493,8 +496,7 @@ pub fn run_task_averaged(
     if usable == 0 {
         debug!(
             src = src.group_name(),
-            "task_averaged: no blocks meet width >= {}",
-            TASK_COMMON_BLOCK_W
+            "task_averaged: no blocks meet width >= {}", TASK_COMMON_BLOCK_W
         );
         return Ok(());
     }
@@ -521,7 +523,7 @@ pub fn run_task_averaged(
 /// `restAP` → A + B for both CWT and HHT (when available).
 /// `hammerAP` → C + D + E for both CWT and HHT (when available).
 pub fn run_for_file(ctx: &AnalysisCtx, h5: &hdf5::File) -> Result<()> {
-    let features_root = open_or_create_group(h5, "features", false)
+    let features_root = open_or_create_group(h5, "07feature_extraction", false)
         .context("failed to open features/ root group")?;
 
     match ctx.task_name {
@@ -558,7 +560,10 @@ pub fn run_for_file(ctx: &AnalysisCtx, h5: &hdf5::File) -> Result<()> {
             }
         }
         other => {
-            debug!(task = other, "unrecognized task, skipping feature extraction");
+            debug!(
+                task = other,
+                "unrecognized task, skipping feature extraction"
+            );
         }
     }
 
