@@ -238,12 +238,19 @@ impl Default for FeatureExtractionParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClassificationParams {
     pub knn_num_neighbors: usize,
+    #[serde(default = "default_knn_metric")]
+    pub knn_metric: String,
+}
+
+fn default_knn_metric() -> String {
+    "cosine".to_string()
 }
 
 impl Default for ClassificationParams {
     fn default() -> Self {
         Self {
             knn_num_neighbors: 3,
+            knn_metric: default_knn_metric(),
         }
     }
 }

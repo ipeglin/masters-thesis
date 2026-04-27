@@ -10,6 +10,7 @@ use tracing::{debug, info};
 use utils::bids_subject_id::BidsSubjectId;
 use utils::config::AppConfig;
 
+use crate::classifiers::DistanceMetric;
 use crate::dataset::{AnalysisKind, FeatureSource, build_per_roi_dataset, load_labels};
 use crate::eval::eval_knn_three_way_split;
 
@@ -19,6 +20,13 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         consolidated_data_dir = %cfg.consolidated_data_dir.display(),
         "starting baseline (chunked) classification"
     );
+
+    let metric: DistanceMetric = cfg
+        .classification
+        .knn_metric
+        .parse()
+        .map_err(anyhow::Error::msg)
+        .with_context(|| "invalid classification.knn_metric")?;
 
     let mut labels = load_labels(&cfg.subject_filter_dir)?;
     let subject_ids: HashSet<String> = fs::read_dir(&cfg.consolidated_data_dir)?
@@ -56,6 +64,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
             &xs,
             &ys,
             cfg.classification.knn_num_neighbors,
+            metric,
             "baseline_chunked",
             source,
             &cfg.classification_results_dir,

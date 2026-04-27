@@ -5,17 +5,25 @@ use std::collections::HashSet;
 use std::fs;
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tracing::{debug, info};
 use utils::bids_subject_id::BidsSubjectId;
 use utils::config::AppConfig;
 
+use crate::classifiers::DistanceMetric;
 use crate::dataset::{AnalysisKind, FeatureSource, build_per_roi_dataset, load_labels};
 use crate::eval::eval_knn_three_way_split;
 
 pub fn run(cfg: &AppConfig) -> Result<()> {
     let started = Instant::now();
     info!("starting baseline (averaged) classification");
+
+    let metric: DistanceMetric = cfg
+        .classification
+        .knn_metric
+        .parse()
+        .map_err(anyhow::Error::msg)
+        .with_context(|| "invalid classification.knn_metric")?;
 
     let mut labels = load_labels(&cfg.subject_filter_dir)?;
     let subject_ids: HashSet<String> = fs::read_dir(&cfg.consolidated_data_dir)?
@@ -52,6 +60,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
             &xs,
             &ys,
             cfg.classification.knn_num_neighbors,
+            metric,
             "baseline_averaged",
             source,
             &cfg.classification_results_dir,

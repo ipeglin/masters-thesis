@@ -8,7 +8,9 @@ use std::fs;
 use std::path::Path;
 use tracing::info;
 
-use crate::classifiers::{DistanceMetric, KNN, KnnConfig, accuracy, confusion_matrix_binary};
+use crate::classifiers::{
+    DistanceMetric, KNN, KnnConfig, accuracy, confusion_matrix_binary,
+};
 use crate::dataset::{FeatureSource, Label};
 use crate::normalizer::ZScoreNormalizer;
 use crate::splits::split_rows_stratified_new;
@@ -48,12 +50,13 @@ fn to_f32(rows: &[Vec<f64>]) -> Vec<Vec<f32>> {
         .collect()
 }
 
-/// Stratified row-wise split, train-fit z-score, 3-NN cosine. Logs results
-/// tagged with `analysis` and `source`.
+/// Stratified row-wise split, train-fit z-score, K-NN with the supplied
+/// distance metric. Logs results tagged with `analysis` and `source`.
 pub fn eval_knn_three_way_split(
     xs: &[Vec<f32>],
     ys: &[Label],
     num_neighbors: usize,
+    metric: DistanceMetric,
     analysis: &str,
     source: FeatureSource,
     results_dir: &Path,
@@ -79,8 +82,8 @@ pub fn eval_knn_three_way_split(
     let x_val_n = to_f32(&normalizer.transform(&to_f64(&x_val)));
 
     let mut knn = KNN::new(KnnConfig {
-        num_neighbors: num_neighbors,
-        metric: DistanceMetric::Cosine,
+        num_neighbors,
+        metric,
         distance_weighted: false,
         mahalanobis_shrinkage: 0.0,
     });
@@ -115,13 +118,14 @@ pub fn eval_knn_three_way_split(
 
     fs::create_dir_all(results_dir)?;
     let source_name = source.dir().to_string();
+    let metric_name = metric.as_str().to_string();
     let report = ClassificationReport {
         analysis: analysis.to_string(),
         source: source_name.clone(),
         split_seed: SEED,
         classifier: "knn".to_string(),
-        num_neighbors: num_neighbors,
-        metric: "cosine".to_string(),
+        num_neighbors,
+        metric: metric_name.clone(),
         distance_weighted: false,
         n_train: train_idx.len(),
         test: SplitReport {

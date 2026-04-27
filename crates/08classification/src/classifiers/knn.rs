@@ -25,6 +25,30 @@ pub enum DistanceMetric {
     MahalanobisDiag,
 }
 
+impl DistanceMetric {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Euclidean => "euclidean",
+            Self::Cosine => "cosine",
+            Self::Mahalanobis => "mahalanobis",
+            Self::MahalanobisDiag => "mahalanobis_diag",
+        }
+    }
+}
+
+impl std::str::FromStr for DistanceMetric {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "euclidean" => Ok(Self::Euclidean),
+            "cosine" => Ok(Self::Cosine),
+            "mahalanobis" => Ok(Self::Mahalanobis),
+            "mahalanobis_diag" => Ok(Self::MahalanobisDiag),
+            _ => Err(format!("unknown DistanceMetric: {}", s)),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct KnnConfig {
     pub num_neighbors: usize,
