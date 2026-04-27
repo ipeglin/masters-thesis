@@ -239,11 +239,15 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
             );
             let h5_file = open_or_create(&path)?;
             debug!(
-                group_path = "/mvmd",
+                group_path = "/04mvmd",
                 force = cfg.force,
                 "opening output group"
             );
-            let mvmd_group = open_or_create_group(&h5_file, "04mvmd", cfg.force)
+            // Top-level /04mvmd never wiped: per-subgroup `open_or_create_group`
+            // calls below honour `cfg.force`. Wiping the parent on heavy files
+            // can leave HDF5's symbol table in a stale state where the next
+            // H5Gcreate2 fails with "name already exists".
+            let mvmd_group = open_or_create_group(&h5_file, "04mvmd", false)
                 .context("failed to open/create group /mvmd")?;
             write_mvmd_algorithm_attrs_if_missing(
                 &mvmd_group,
@@ -457,9 +461,9 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                 let parc_group = h5_file
                     .group("01fmri_parcellation")
                     .context("failed to open group /01fmri_parcellation for ROI subset")?;
-                let dataset = parc_group
-                    .dataset("full_run_raw")
-                    .context("failed to open dataset /01fmri_parcellation/full_run_raw for ROI subset")?;
+                let dataset = parc_group.dataset("full_run_raw").context(
+                    "failed to open dataset /01fmri_parcellation/full_run_raw for ROI subset",
+                )?;
                 let data: Array2<f32> = dataset.read_2d()?;
                 let roi_data = data.select(Axis(0), &roi_row_indices);
 
@@ -586,12 +590,12 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
             );
             let h5_file = open_or_create(&path)?;
             debug!(
-                group_path = "/mvmd",
+                group_path = "/04mvmd",
                 force = cfg.force,
                 "opening output group"
             );
             let mvmd_group = open_or_create_group(&h5_file, "04mvmd", cfg.force)
-                .context("failed to open/create group /mvmd")?;
+                .context("failed to open/create group /04mvmd")?;
             write_mvmd_algorithm_attrs_if_missing(
                 &mvmd_group,
                 alpha,
@@ -680,7 +684,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                         "starting MVMD decomposition"
                     );
 
-                    // Check if output group already exists (/mvmd/blocks_raw/block_X/)
+                    // Check if output group already exists (/04mvmd/blocks_raw/block_X/)
                     if !cfg.force && mvmd_blocks_group.group(block_name).is_ok() {
                         let existing_block_group =
                             mvmd_blocks_group.group(block_name).with_context(|| {
@@ -764,7 +768,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                                 format!(
                                     "failed to open/create output group {output_block_group_path}"
                                 )
-                            })?; // /mvmd/blocks_raw/block_X/
+                            })?; // /04mvmd/blocks_raw/block_X/
                     let block_write_start = Instant::now();
 
                     debug!(dataset_path = %format!("{output_block_group_path}/modes"), "writing output dataset");
@@ -844,10 +848,14 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
             }
 
             // ROI-specific Block-wise Decomposition //
-            let mvmd_blocks_roi_group =
-                open_or_create_group(&mvmd_group, group_name_blocks_roi, cfg.force).with_context(
-                    || format!("failed to open/create output group /04mvmd/{group_name_blocks_roi}"),
-                )?;
+            let mvmd_blocks_roi_group = open_or_create_group(
+                &mvmd_group,
+                group_name_blocks_roi,
+                cfg.force,
+            )
+            .with_context(|| {
+                format!("failed to open/create output group /04mvmd/{group_name_blocks_roi}")
+            })?;
 
             for trial_type in &target_trial_types {
                 let trial_group_path = format!("/02fmri_segment_trials/blocks_raw/{trial_type}");
@@ -883,8 +891,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                 );
 
                 for (block_idx, block_name) in block_names.iter().enumerate() {
-                    let input_block_dataset_path =
-                        format!("{trial_group_path}/{block_name}");
+                    let input_block_dataset_path = format!("{trial_group_path}/{block_name}");
                     let output_block_group_path =
                         format!("/04mvmd/{group_name_blocks_roi}/{block_name}");
 
