@@ -9,7 +9,8 @@ use std::path::Path;
 use tracing::info;
 
 use crate::classifiers::{
-    DistanceMetric, KNN, KnnConfig, accuracy, confusion_matrix_binary,
+    DistanceMetric, KNN, KnnConfig, accuracy, confusion_matrix_binary, sensitivity_from_cm,
+    specificity_from_cm,
 };
 use crate::dataset::{FeatureSource, Label};
 use crate::normalizer::ZScoreNormalizer;
@@ -21,6 +22,8 @@ const SEED: u64 = 42;
 struct SplitReport {
     n_samples: usize,
     accuracy: f32,
+    sensitivity: f32,
+    specificity: f32,
     confusion_matrix: [[u32; 2]; 2],
 }
 

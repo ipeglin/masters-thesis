@@ -469,6 +469,24 @@ pub fn confusion_matrix_binary(y_true: &[i32], y_pred: &[i32]) -> [[u32; 2]; 2] 
     cm
 }
 
+/// Sensitivity (recall on positives, label = 1): TP / (TP + FN).
+/// Returns 0 when no actual positives exist.
+pub fn sensitivity_from_cm(cm: &[[u32; 2]; 2]) -> f32 {
+    let tp = cm[1][1] as f32;
+    let fn_ = cm[1][0] as f32;
+    let denom = tp + fn_;
+    if denom == 0.0 { 0.0 } else { tp / denom }
+}
+
+/// Specificity (recall on negatives, label = 0): TN / (TN + FP).
+/// Returns 0 when no actual negatives exist.
+pub fn specificity_from_cm(cm: &[[u32; 2]; 2]) -> f32 {
+    let tn = cm[0][0] as f32;
+    let fp = cm[0][1] as f32;
+    let denom = tn + fp;
+    if denom == 0.0 { 0.0 } else { tn / denom }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
