@@ -13,8 +13,7 @@ Execution order (crates 00-09):
 6. **05hilbert**: Hilbert transform
 7. **06fc**: Functional connectivity
 8. **07feature_extraction**: Extract features (CNN)
-9. **08data_splitting**: Train/test split
-10. **09classification**: Model classification
+10. **08classification**: Model classification
 
 **utils**: Shared helpers.
 **cli**: Pipeline CLI.
@@ -28,7 +27,7 @@ Run main initialization script to prepare paths, atlases, and system environment
 
 ```bash
 # Initialize project paths, download atlases, and build dependencies
-bash scripts/init.sh
+bash ./scripts/init.sh
 ```
 
 ### IDUN Cluster Setup
@@ -37,17 +36,17 @@ IDUN needs specific modules and environment prep. The `init.sh` script handles t
 
 ```bash
 # Option 1: Pass idun argument
-bash scripts/init.sh idun
+bash ./scripts/init.sh idun
 
 # Option 2: Empty trigger file
 touch .sys-idun
-bash scripts/init.sh
+bash ./scripts/init.sh
 ```
 This auto-loads IDUN specific config defaults and builds HDF5 (if missing). 
 
 **CRITICAL (IDUN):** After running `init.sh`, you must source the environment script to load Rust and CUDA modules into your current shell session:
 ```bash
-source scripts/sys-idun_env.sh
+source ./scripts/sys-idun_env.sh
 ```
 
 This script will automatically detect if `LIBTORCH` is exported in your environment (e.g. from your `~/.bashrc`). If missing, it will automatically download the correct PyTorch CUDA binaries (`libtorch`) into `$HOME/libtorch`, and configure `LD_LIBRARY_PATH` for your session.
@@ -74,10 +73,45 @@ cargo build --release
 
 ## Usage
 
+### Running on accelerated environment on IDUN using Slurm (Recommended)
+For accelerated and significantly improved processing runtime, you should try to always use Slurm on IDUN.
+The current repo will during initialization — as described above — fetch preconfigured slurm schemas made by the author, if and only if the system is detected to be running on IDUN.
+The schemas will be written to `./slurm` relative to the project root, and username injection will be run automatically to insert your NTNU username on IDUN into paths in the schema.
+
+These schemas may be added to the IDUN resource queue using the `sbatch` command. For example
 ```bash
-cargo run --release -p cli -- --help
-cargo run --release -p cli -- tcp-select-subjects
+sbatch ./slurm/run_pipeline.slurm
 ```
+
+For additional information on using Slurm on IDUN, see [these student-written articles](https://www.hpc.ntnu.no/idun/documentation/#:~:text=Articles) in the official NTNU [IDUN Documentation](https://www.hpc.ntnu.no/idun/documentation/).
+
+__You are of course welcome to modify your slurm schemas after installation. However, beware that rerunning `scripts/init.sh` may again overwrite your own configuration. Therefore, we recommend you to either rename your self-configured `.slurm` files, or move them to a new directory.__
+
+### Running the pipeline locally
+```bash
+bash scripts/run-pipeline.sh
+```
+
+### Single-crate execution
+__NB: It is important to note that pipeline steps are highly dependent on previous crates. The user is responsible for running pipeline steps in the appropriate order when executing crates separately.__
+
+```bash
+cargo run -- select-subjects
+cargo run -- parcellate-bold --force # forcefully recompute parcellating even if precomputed
+```
+
+Complete list of CLI commands per crate:
+| Crate                 | CLI Command        |
+|-----------------------|--------------------|
+| 00subject_selection   | select-subjects    |
+| 01fmri_parcellation   | parcellate-bold    |
+| 02fmri_segment_trials | segment-trials     |
+| 03cwt                 | cwt                |
+| 04mvmd                | mvmd               |
+| 05hilbert             | hht                |
+| 06fc                  | fc                 |
+| 07feature_extraction  | feature-extraction |
+| 08classification      | classify           |
 
 ## Configuration
 
