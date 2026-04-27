@@ -58,6 +58,9 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         )?;
     }
 
-    info!(elapsed_ms = started.elapsed().as_millis() as u64, "baseline (averaged) done");
+    info!(
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "baseline (averaged) done"
+    );
     Ok(())
 }

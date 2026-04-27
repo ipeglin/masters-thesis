@@ -59,6 +59,9 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         )?;
     }
 
-    info!(elapsed_ms = started.elapsed().as_millis() as u64, "task_per_block done");
+    info!(
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "task_per_block done"
+    );
     Ok(())
 }

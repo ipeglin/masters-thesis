@@ -83,8 +83,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
             all_groups.extend(groups.iter().cloned());
             all_y_for_split.extend(ys.iter().map(|l| l.as_i32()));
         }
-        let (train_g, test_g, val_g) =
-            split_groups_stratified(&all_groups, &all_y_for_split, SEED);
+        let (train_g, test_g, val_g) = split_groups_stratified(&all_groups, &all_y_for_split, SEED);
 
         let mut subj_test_pred: HashMap<String, Vec<i32>> = HashMap::new();
         let mut subj_val_pred: HashMap<String, Vec<i32>> = HashMap::new();
@@ -159,6 +158,9 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
             "block ensemble (subject majority vote) results"
         );
     }
-    info!(elapsed_ms = started.elapsed().as_millis() as u64, "block ensemble done");
+    info!(
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "block ensemble done"
+    );
     Ok(())
 }

@@ -12,9 +12,7 @@ use utils::bids_subject_id::BidsSubjectId;
 use utils::config::AppConfig;
 
 use crate::classifiers::{DistanceMetric, KNN, KnnConfig, accuracy, confusion_matrix_binary};
-use crate::dataset::{
-    AnalysisKind, FeatureSource, Label, build_per_roi_dataset, load_labels,
-};
+use crate::dataset::{AnalysisKind, FeatureSource, Label, build_per_roi_dataset, load_labels};
 use crate::normalizer::ZScoreNormalizer;
 use crate::splits::split_subjects_stratified;
 
@@ -107,15 +105,21 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         let x_val_n = to_f32(&normalizer.transform(&to_f64(&x_val)));
 
         let mut knn = KNN::new(KnnConfig {
-            num_neighbors: 3,
+            num_neighbors: cfg.classification.knn_num_neighbors,
             metric: DistanceMetric::Cosine,
             distance_weighted: false,
             mahalanobis_shrinkage: 0.0,
         });
         knn.fit(x_train_n, y_train.clone())?;
 
-        let test_pred: Vec<i32> = x_test_n.iter().map(|x| knn.predict(x).unwrap_or(0)).collect();
-        let val_pred: Vec<i32> = x_val_n.iter().map(|x| knn.predict(x).unwrap_or(0)).collect();
+        let test_pred: Vec<i32> = x_test_n
+            .iter()
+            .map(|x| knn.predict(x).unwrap_or(0))
+            .collect();
+        let val_pred: Vec<i32> = x_val_n
+            .iter()
+            .map(|x| knn.predict(x).unwrap_or(0))
+            .collect();
 
         info!(
             source = ?source,
@@ -126,6 +130,9 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
             "subject stratified results"
         );
     }
-    info!(elapsed_ms = started.elapsed().as_millis() as u64, "subject stratified done");
+    info!(
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "subject stratified done"
+    );
     Ok(())
 }

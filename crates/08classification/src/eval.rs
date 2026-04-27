@@ -79,15 +79,21 @@ pub fn eval_knn_three_way_split(
     let x_val_n = to_f32(&normalizer.transform(&to_f64(&x_val)));
 
     let mut knn = KNN::new(KnnConfig {
-        num_neighbors: 3,
+        num_neighbors: num_neighbors,
         metric: DistanceMetric::Cosine,
         distance_weighted: false,
         mahalanobis_shrinkage: 0.0,
     });
     knn.fit(x_train_n, y_train.clone())?;
 
-    let test_pred: Vec<i32> = x_test_n.iter().map(|x| knn.predict(x).unwrap_or(-1)).collect();
-    let val_pred: Vec<i32> = x_val_n.iter().map(|x| knn.predict(x).unwrap_or(-1)).collect();
+    let test_pred: Vec<i32> = x_test_n
+        .iter()
+        .map(|x| knn.predict(x).unwrap_or(-1))
+        .collect();
+    let val_pred: Vec<i32> = x_val_n
+        .iter()
+        .map(|x| knn.predict(x).unwrap_or(-1))
+        .collect();
 
     let test_acc = accuracy(&y_test, &test_pred);
     let val_acc = accuracy(&y_val, &val_pred);
