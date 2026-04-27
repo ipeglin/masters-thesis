@@ -52,6 +52,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         eval_knn_three_way_split(
             &xs,
             &ys,
+            cfg.classification.knn_num_neighbors,
             "task_concat",
             source,
             &cfg.classification_results_dir,

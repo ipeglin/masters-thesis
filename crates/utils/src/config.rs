@@ -39,6 +39,8 @@ pub struct AppConfig {
     pub mvmd: MvmdParams,
     #[serde(default)]
     pub feature_extraction: FeatureExtractionParams,
+    #[serde(default)]
+    pub classification: ClassificationParams,
 }
 
 impl Default for AppConfig {
@@ -63,6 +65,7 @@ impl Default for AppConfig {
             parcellation: ParcellationParams::default(),
             mvmd: MvmdParams::default(),
             feature_extraction: FeatureExtractionParams::default(),
+            classification: ClassificationParams::default(),
         }
     }
 }
@@ -228,6 +231,19 @@ impl Default for FeatureExtractionParams {
             roi_set: RoiSet::default(),
             hht_log_amp: default_hht_log_amp(),
             image_fit: ImageFitMode::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClassificationParams {
+    pub knn_num_neighbors: usize,
+}
+
+impl Default for ClassificationParams {
+    fn default() -> Self {
+        Self {
+            knn_num_neighbors: 3,
         }
     }
 }

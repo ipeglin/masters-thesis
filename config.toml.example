@@ -34,3 +34,6 @@ num_modes = 12
 
 [feature_extraction]
 cnn_weights_path = ""
+
+[classification]
+knn_num_neighbors = 3

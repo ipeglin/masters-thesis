@@ -121,7 +121,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
             let x_val_n = to_f32(&normalizer.transform(&to_f64(&x_val)));
 
             let mut knn = KNN::new(KnnConfig {
-                num_neighbors: 3,
+                num_neighbors: cfg.classification.knn_num_neighbors,
                 metric: DistanceMetric::Cosine,
                 distance_weighted: false,
                 mahalanobis_shrinkage: 0.0,

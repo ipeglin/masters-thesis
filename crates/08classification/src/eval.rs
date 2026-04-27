@@ -53,6 +53,7 @@ fn to_f32(rows: &[Vec<f64>]) -> Vec<Vec<f32>> {
 pub fn eval_knn_three_way_split(
     xs: &[Vec<f32>],
     ys: &[Label],
+    num_neighbors: usize,
     analysis: &str,
     source: FeatureSource,
     results_dir: &Path,
@@ -113,7 +114,7 @@ pub fn eval_knn_three_way_split(
         source: source_name.clone(),
         split_seed: SEED,
         classifier: "knn".to_string(),
-        num_neighbors: 3,
+        num_neighbors: num_neighbors,
         metric: "cosine".to_string(),
         distance_weighted: false,
         n_train: train_idx.len(),
