@@ -8,6 +8,7 @@ use utils::bids_subject_id::BidsSubjectId;
 use utils::config::AppConfig;
 use utils::frequency_bands;
 use utils::hdf5_io::{H5Attr, open_or_create, open_or_create_group, write_dataset};
+use utils::roi_migration::{check_roi_fingerprint, propagate_roi_attrs};
 
 /// Number of log-spaced frequency bins for marginal spectra and the 2-D Hilbert
 /// spectrum H(omega, t). Matches the CWT scale-grid height so HHT spectrograms
@@ -287,6 +288,7 @@ fn process_mvmd_modes_group(
     hht_parent: &hdf5::Group,
     name: &str,
     task_name: &str,
+    is_roi: bool,
 ) -> Result<()> {
     let mvmd_sub = match mvmd_parent.group(name) {
         Ok(g) => g,
@@ -300,6 +302,11 @@ fn process_mvmd_modes_group(
         }
     };
 
+    if is_roi {
+        let expected = cfg.roi_selection.fingerprint();
+        check_roi_fingerprint(&mvmd_sub, &expected, &format!("/04mvmd/.../{name}"))?;
+    }
+
     let hht_done = !cfg.force
         && hht_parent
             .group(name)
@@ -307,6 +314,14 @@ fn process_mvmd_modes_group(
             .unwrap_or(false);
 
     if hht_done {
+        if is_roi {
+            let existing = hht_parent.group(name)?;
+            check_roi_fingerprint(
+                &existing,
+                &cfg.roi_selection.fingerprint(),
+                &format!("/05hht/.../{name}"),
+            )?;
+        }
         debug!(
             task_name = task_name,
             group = name,
@@ -345,6 +360,9 @@ fn process_mvmd_modes_group(
     let dest = open_or_create_group(hht_parent, name, cfg.force)?;
     write_hht(cfg, &dest, &result, cfg.force)?;
     propagate_roi_indices(&mvmd_sub, &dest)?;
+    if is_roi {
+        propagate_roi_attrs(&mvmd_sub, &dest)?;
+    }
     let write_duration_ms = write_start.elapsed().as_millis();
 
     info!(
@@ -367,6 +385,7 @@ fn process_blocks_parent(
     name: &str,
     task_name: &str,
     error_count: &mut usize,
+    is_roi: bool,
 ) -> Result<()> {
     let mvmd_blocks = match mvmd_parent.group(name) {
         Ok(g) => g,
@@ -404,6 +423,7 @@ fn process_blocks_parent(
             &hht_blocks,
             block_name,
             task_name,
+            is_roi,
         ) {
             *error_count += 1;
             warn!(
@@ -506,25 +526,26 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
 
                 match task_name {
                     "restAP" => {
-                        // Whole-signal MVMD on all channels
                         process_mvmd_modes_group(
                             cfg,
                             &mvmd_group,
                             &hht_group,
                             "full_run_raw",
                             task_name,
+                            false,
                         )?;
-                        // Whole-signal MVMD on 28 ROI subset
-                        process_mvmd_modes_group(
-                            cfg,
-                            &mvmd_group,
-                            &hht_group,
-                            "full_run_raw_roi",
-                            task_name,
-                        )?;
+                        if !cfg.roi_selection.is_empty() {
+                            process_mvmd_modes_group(
+                                cfg,
+                                &mvmd_group,
+                                &hht_group,
+                                "full_run_raw_roi",
+                                task_name,
+                                true,
+                            )?;
+                        }
                     }
                     "hammerAP" => {
-                        // Per-block MVMD on all channels (face trials only)
                         process_blocks_parent(
                             cfg,
                             &mvmd_group,
@@ -532,16 +553,19 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                             "blocks_raw",
                             task_name,
                             &mut error_count,
+                            false,
                         )?;
-                        // Per-block MVMD on 28 ROI subset
-                        process_blocks_parent(
-                            cfg,
-                            &mvmd_group,
-                            &hht_group,
-                            "blocks_raw_roi",
-                            task_name,
-                            &mut error_count,
-                        )?;
+                        if !cfg.roi_selection.is_empty() {
+                            process_blocks_parent(
+                                cfg,
+                                &mvmd_group,
+                                &hht_group,
+                                "blocks_raw_roi",
+                                task_name,
+                                &mut error_count,
+                                true,
+                            )?;
+                        }
                     }
                     other => {
                         debug!(

@@ -10,6 +10,7 @@ use utils::bids_subject_id::BidsSubjectId;
 use utils::config::AppConfig;
 use utils::frequency_bands::{self, SLOW_BANDS};
 use utils::hdf5_io::{H5Attr, open_or_create, open_or_create_group, write_attrs, write_dataset};
+use utils::roi_migration::{check_roi_fingerprint, propagate_roi_attrs};
 
 /// Clip bound for Fisher Z transform to avoid ±inf at r = ±1.
 const FISHER_CLIP: f64 = 0.9999;
@@ -356,6 +357,7 @@ fn fc_for_mvmd_subgroup(
     name: &str,
     task_name: &str,
     force: bool,
+    roi_fingerprint: Option<&str>,
 ) -> Result<()> {
     let src = match src_parent.group(name) {
         Ok(g) => g,
@@ -369,8 +371,16 @@ fn fc_for_mvmd_subgroup(
         }
     };
 
+    if let Some(expected) = roi_fingerprint {
+        check_roi_fingerprint(&src, expected, &format!("/04mvmd/.../{name}"))?;
+    }
+
     if !force && fc_parent.group(name).is_ok() {
         if subgroup_complete(fc_parent, name, "n_modes") {
+            if let Some(expected) = roi_fingerprint {
+                let existing = fc_parent.group(name)?;
+                check_roi_fingerprint(&existing, expected, &format!("/06fc/.../{name}"))?;
+            }
             debug!(
                 task_name = task_name,
                 group = name,
@@ -394,6 +404,9 @@ fn fc_for_mvmd_subgroup(
     let per_mode_fz = process_mvmd_modes(&dest, &modes, &cfreqs, force)?;
     write_slow_band_aggregates(&dest, &per_mode_fz, &cfreqs, force)?;
     propagate_roi_indices(&src, &dest)?;
+    if roi_fingerprint.is_some() {
+        propagate_roi_attrs(&src, &dest)?;
+    }
     write_attrs(
         &dest,
         &[
@@ -420,6 +433,7 @@ fn fc_for_mvmd_blocks(
     name: &str,
     task_name: &str,
     force: bool,
+    roi_fingerprint: Option<&str>,
 ) -> Result<()> {
     let blocks_src = match mvmd_root.group(name) {
         Ok(g) => g,
@@ -450,7 +464,14 @@ fn fc_for_mvmd_blocks(
 
     let dest_parent = open_or_create_group(fc_mvmd, name, false)?;
     for block_name in &block_names {
-        fc_for_mvmd_subgroup(&blocks_src, &dest_parent, block_name, task_name, force)?;
+        fc_for_mvmd_subgroup(
+            &blocks_src,
+            &dest_parent,
+            block_name,
+            task_name,
+            force,
+            roi_fingerprint,
+        )?;
     }
     debug!(
         task_name = task_name,
@@ -638,7 +659,6 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                                 )?;
                             }
                         }
-                        // MVMD whole-signal modes (all channels + ROI subset)
                         if let Ok(mvmd_root) = h5_file.group("04mvmd") {
                             let fc_mvmd = open_or_create_group(&fc_group, "mvmd", false)?;
                             fc_for_mvmd_subgroup(
@@ -647,14 +667,19 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                                 "full_run_raw",
                                 task_name,
                                 cfg.force,
+                                None,
                             )?;
-                            fc_for_mvmd_subgroup(
-                                &mvmd_root,
-                                &fc_mvmd,
-                                "full_run_raw_roi",
-                                task_name,
-                                cfg.force,
-                            )?;
+                            if !cfg.roi_selection.is_empty() {
+                                let fp = cfg.roi_selection.fingerprint();
+                                fc_for_mvmd_subgroup(
+                                    &mvmd_root,
+                                    &fc_mvmd,
+                                    "full_run_raw_roi",
+                                    task_name,
+                                    cfg.force,
+                                    Some(&fp),
+                                )?;
+                            }
                         }
                     }
                     "hammerAP" => {
@@ -671,7 +696,6 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                                 )?;
                             }
                         }
-                        // MVMD block modes (all channels + ROI subset)
                         if let Ok(mvmd_root) = h5_file.group("04mvmd") {
                             let fc_mvmd = open_or_create_group(&fc_group, "mvmd", false)?;
                             fc_for_mvmd_blocks(
@@ -680,14 +704,19 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                                 "blocks_raw",
                                 task_name,
                                 cfg.force,
+                                None,
                             )?;
-                            fc_for_mvmd_blocks(
-                                &mvmd_root,
-                                &fc_mvmd,
-                                "blocks_raw_roi",
-                                task_name,
-                                cfg.force,
-                            )?;
+                            if !cfg.roi_selection.is_empty() {
+                                let fp = cfg.roi_selection.fingerprint();
+                                fc_for_mvmd_blocks(
+                                    &mvmd_root,
+                                    &fc_mvmd,
+                                    "blocks_raw_roi",
+                                    task_name,
+                                    cfg.force,
+                                    Some(&fp),
+                                )?;
+                            }
                         }
                     }
                     other => {
