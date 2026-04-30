@@ -146,7 +146,7 @@ fn load_cwt_blocks(h5: &hdf5::File, ctx: &AnalysisCtx) -> Result<Vec<(String, Te
     Ok(out)
 }
 
-/// HHT restAP whole-run: `/05hht/full_run_raw_roi/hilbert_spectrum`
+/// HHT restAP whole-run: `/05hht/full_run_std_roi/hilbert_spectrum`
 /// `[n_target, 224, T_full]` (already ROI-selected upstream by 04mvmd / 05hilbert).
 /// Bails on `roi_selection_fingerprint` mismatch — the upstream `_roi` group must
 /// match the current `[roi_selection]` config.
@@ -155,14 +155,14 @@ fn load_hht_full_run(h5: &hdf5::File, ctx: &AnalysisCtx) -> Result<Option<Tensor
         Ok(g) => g,
         Err(_) => return Ok(None),
     };
-    let sub = match hht_root.group("full_run_raw_roi") {
+    let sub = match hht_root.group("full_run_std_roi") {
         Ok(g) => g,
         Err(_) => return Ok(None),
     };
     check_roi_fingerprint(
         &sub,
         ctx.roi_selection_fingerprint,
-        "/05hht/full_run_raw_roi",
+        "/05hht/full_run_std_roi",
     )?;
     let ds = match sub.dataset("hilbert_spectrum") {
         Ok(d) => d,
@@ -171,7 +171,7 @@ fn load_hht_full_run(h5: &hdf5::File, ctx: &AnalysisCtx) -> Result<Option<Tensor
     let (t, [n_rows, _, _]) = read_3d_as_f32(&ds)?;
     if (n_rows as usize) != ctx.roi_indices.len() {
         anyhow::bail!(
-            "hht full_run_raw_roi rows {} != target ROI count {} — atlas mismatch",
+            "hht full_run_std_roi rows {} != target ROI count {} — atlas mismatch",
             n_rows,
             ctx.roi_indices.len()
         );
@@ -179,7 +179,7 @@ fn load_hht_full_run(h5: &hdf5::File, ctx: &AnalysisCtx) -> Result<Option<Tensor
     Ok(Some(t))
 }
 
-/// HHT hammerAP face blocks: `/05hht/blocks_raw_roi/<block>/hilbert_spectrum`
+/// HHT hammerAP face blocks: `/05hht/blocks_std_roi/<block>/hilbert_spectrum`
 /// (already ROI-selected upstream). Bails on `roi_selection_fingerprint`
 /// mismatch on each block group.
 fn load_hht_blocks(h5: &hdf5::File, ctx: &AnalysisCtx) -> Result<Vec<(String, Tensor)>> {
@@ -187,7 +187,7 @@ fn load_hht_blocks(h5: &hdf5::File, ctx: &AnalysisCtx) -> Result<Vec<(String, Te
         Ok(g) => g,
         Err(_) => return Ok(vec![]),
     };
-    let blocks = match hht_root.group("blocks_raw_roi") {
+    let blocks = match hht_root.group("blocks_std_roi") {
         Ok(g) => g,
         Err(_) => return Ok(vec![]),
     };
@@ -203,7 +203,7 @@ fn load_hht_blocks(h5: &hdf5::File, ctx: &AnalysisCtx) -> Result<Vec<(String, Te
         check_roi_fingerprint(
             &g,
             ctx.roi_selection_fingerprint,
-            &format!("/05hht/blocks_raw_roi/{name}"),
+            &format!("/05hht/blocks_std_roi/{name}"),
         )?;
         let ds = match g.dataset("hilbert_spectrum") {
             Ok(d) => d,
@@ -212,7 +212,7 @@ fn load_hht_blocks(h5: &hdf5::File, ctx: &AnalysisCtx) -> Result<Vec<(String, Te
         let (t, [n_rows, _, _]) = read_3d_as_f32(&ds)?;
         if (n_rows as usize) != ctx.roi_indices.len() {
             anyhow::bail!(
-                "hht blocks_raw_roi/{} rows {} != target ROI count {}",
+                "hht blocks_std_roi/{} rows {} != target ROI count {}",
                 name,
                 n_rows,
                 ctx.roi_indices.len()
@@ -656,7 +656,7 @@ pub fn run_task_per_block_resized(
 // Strategy H — hammerAP, image-resized blocks averaged
 // ---------------------------------------------------------------------------
 
-/// Bicubicly resize each block's raw spectrum to `224×224`, mean across
+/// Bicubicly resize each block's std spectrum to `224×224`, mean across
 /// blocks per ROI, then run the averaged image through DenseNet. Written
 /// under `features/<src>/task_averaged_resized`.
 pub fn run_task_averaged_resized(

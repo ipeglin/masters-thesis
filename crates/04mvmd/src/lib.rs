@@ -145,9 +145,9 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         .collect();
 
     let target_trial_types = vec!["face"];
-    let group_name_blocks_raw = "blocks_raw";
-    let group_name_full_run_roi = "full_run_raw_roi";
-    let group_name_blocks_roi = "blocks_raw_roi";
+    let group_name_blocks_std = "blocks_std";
+    let group_name_full_run_roi = "full_run_std_roi";
+    let group_name_blocks_roi = "blocks_std_roi";
     // let group_name_blocks_std = "blocks_std";
 
     let brain_atlas =
@@ -278,13 +278,13 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
             let run_idx = rs_file.get("run").unwrap_or("unknown");
 
             // Full-run Decomposition //
-            let fr_done = !cfg.force && mvmd_group.group("full_run_raw").is_ok();
+            let fr_done = !cfg.force && group_is_complete(&mvmd_group, "full_run_std");
             if fr_done {
-                let fr_group = mvmd_group.group("full_run_raw").context(
-                    "failed to open group /mvmd/full_run_raw for center_frequencies sync",
+                let fr_group = mvmd_group.group("full_run_std").context(
+                    "failed to open group /mvmd/full_run_std for center_frequencies sync",
                 )?;
                 sync_center_frequencies_attr_from_group(&fr_group).context(
-                    "failed to sync center_frequencies attribute to /mvmd/full_run_raw/modes",
+                    "failed to sync center_frequencies attribute to /mvmd/full_run_std/modes",
                 )?;
                 debug!(
                     task_name = task_name,
@@ -296,22 +296,22 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                     task_name = task_name,
                     run = run_idx,
                     signal_type = "full_run",
-                    input_dataset = "/01fmri_parcellation/full_run_raw",
-                    output_group = "/04mvmd/full_run_raw",
+                    input_dataset = "/01fmri_parcellation/full_run_std",
+                    output_group = "/04mvmd/full_run_std",
                     "starting MVMD decomposition"
                 );
                 let mvmd_start = Instant::now();
 
                 debug!(
-                    dataset_path = "/01fmri_parcellation/full_run_raw",
+                    dataset_path = "/01fmri_parcellation/full_run_std",
                     "reading input dataset"
                 );
                 let parc_group = h5_file
                     .group("01fmri_parcellation")
                     .context("failed to open group /01fmri_parcellation")?;
                 let dataset = parc_group
-                    .dataset("full_run_raw")
-                    .context("failed to open dataset /01fmri_parcellation/full_run_raw")?;
+                    .dataset("full_run_std")
+                    .context("failed to open dataset /01fmri_parcellation/full_run_std")?;
                 let data: Array2<f32> = dataset.read_2d()?;
 
                 let columns: Vec<Column> = data
@@ -336,16 +336,16 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                 let mvmd_wb_duration_ms = mvmd_start.elapsed().as_millis();
 
                 debug!(
-                    group_path = "/mvmd/full_run_raw",
+                    group_path = "/mvmd/full_run_std",
                     force = cfg.force,
                     "opening output group"
                 );
-                let fr_group = open_or_create_group(&mvmd_group, "full_run_raw", cfg.force)
-                    .context("failed to open/create group /mvmd/full_run_raw")?;
+                let fr_group = open_or_create_group(&mvmd_group, "full_run_std", true)
+                    .context("failed to open/create group /mvmd/full_run_std")?;
                 let write_start = Instant::now();
 
                 debug!(
-                    dataset_path = "/mvmd/full_run_raw/modes_gridded",
+                    dataset_path = "/mvmd/full_run_std/modes_gridded",
                     "writing output dataset"
                 );
                 write_dataset(
@@ -358,7 +358,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
 
                 let modes_shape = signal_decomposition.modes.shape();
                 debug!(
-                    dataset_path = "/mvmd/full_run_raw/modes",
+                    dataset_path = "/mvmd/full_run_std/modes",
                     "writing output dataset"
                 );
                 write_dataset(
@@ -370,7 +370,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                 )?;
                 let fr_modes_dataset = fr_group
                     .dataset("modes")
-                    .context("failed to open dataset /mvmd/full_run_raw/modes")?;
+                    .context("failed to open dataset /mvmd/full_run_std/modes")?;
                 write_center_frequencies_attr(
                     &fr_modes_dataset,
                     signal_decomposition.center_frequencies.as_slice().unwrap(),
@@ -378,7 +378,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
 
                 let cf_shape = signal_decomposition.frequency_traces.shape();
                 debug!(
-                    dataset_path = "/mvmd/full_run_raw/frequency_traces",
+                    dataset_path = "/mvmd/full_run_std/frequency_traces",
                     "writing output dataset"
                 );
                 write_dataset(
@@ -390,7 +390,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                 )?;
 
                 debug!(
-                    dataset_path = "/mvmd/full_run_raw/center_frequencies",
+                    dataset_path = "/mvmd/full_run_std/center_frequencies",
                     "writing output dataset"
                 );
                 write_dataset(
@@ -444,7 +444,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
 
             // ROI-specific Full-run Decomposition //
             // Skipped entirely when no ROI selection is configured; the
-            // whole-signal `full_run_raw` block above still runs.
+            // whole-signal `full_run_std` block above still runs.
             if !roi_subset_enabled {
                 debug!(
                     task_name = task_name,
@@ -486,14 +486,14 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                 );
                 let mvmd_roi_start = Instant::now();
 
-                let parc_group = h5_file
-                    .group("01fmri_parcellation")
-                    .context("failed to open group /01fmri_parcellation for ROI subset")?;
-                let dataset = parc_group.dataset("full_run_raw").context(
-                    "failed to open dataset /01fmri_parcellation/full_run_raw for ROI subset",
-                )?;
-                let data: Array2<f32> = dataset.read_2d()?;
-                let roi_data = data.select(Axis(0), &roi_row_indices);
+                    let parc_group = h5_file
+                        .group("01fmri_parcellation")
+                        .context("failed to open group /01fmri_parcellation for ROI subset")?;
+                    let dataset = parc_group.dataset("full_run_std").context(
+                        "failed to open dataset /01fmri_parcellation/full_run_std for ROI subset",
+                    )?;
+                    let data: Array2<f32> = dataset.read_2d()?;
+                    let roi_data = data.select(Axis(0), &roi_row_indices);
 
                 let roi_columns: Vec<Column> = roi_data
                     .outer_iter()
@@ -646,28 +646,28 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
             info!(
                 task_name = task_name,
                 signal_type = "blocks",
-                input_group = "/02fmri_segment_trials/blocks_raw",
-                output_group = "/04mvmd/blocks_raw",
+                input_group = "/02fmri_segment_trials/blocks_std",
+                output_group = "/04mvmd/blocks_std",
                 "starting MVMD decomposition"
             );
 
             // Block-wise Decomposition //
             debug!(
-                group_path = "/02fmri_segment_trials/blocks_raw",
+                group_path = "/02fmri_segment_trials/blocks_std",
                 "opening input group"
             );
             let segment_root = h5_file
                 .group("02fmri_segment_trials")
                 .context("failed to open input group /02fmri_segment_trials")?;
             let ts_blocks_group = segment_root
-                .group(group_name_blocks_raw)
-                .context("failed to open input group /02fmri_segment_trials/blocks_raw")?;
+                .group(group_name_blocks_std)
+                .context("failed to open input group /02fmri_segment_trials/blocks_std")?;
             let mvmd_blocks_group =
-                open_or_create_group(&mvmd_group, group_name_blocks_raw, cfg.force)
-                    .context("failed to open/create output group /04mvmd/blocks_raw")?;
+                open_or_create_group(&mvmd_group, group_name_blocks_std, cfg.force)
+                    .context("failed to open/create output group /04mvmd/blocks_std")?;
 
             for trial_type in &target_trial_types {
-                let trial_group_path = format!("/02fmri_segment_trials/blocks_raw/{trial_type}");
+                let trial_group_path = format!("/02fmri_segment_trials/blocks_std/{trial_type}");
                 let trial_group = match ts_blocks_group.group(trial_type) {
                     Ok(g) => g,
                     Err(_) => {
@@ -705,7 +705,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
 
                 for (block_idx, block_name) in block_names.iter().enumerate() {
                     let input_block_dataset_path = format!("{trial_group_path}/{block_name}");
-                    let output_block_group_path = format!("/04mvmd/blocks_raw/{block_name}");
+                    let output_block_group_path = format!("/04mvmd/blocks_std/{block_name}");
 
                     info!(
                         task_name = task_name,
@@ -719,8 +719,8 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                         "starting MVMD decomposition"
                     );
 
-                    // Check if output group already exists (/04mvmd/blocks_raw/block_X/)
-                    if !cfg.force && mvmd_blocks_group.group(block_name).is_ok() {
+                    // Check if output group already exists (/04mvmd/blocks_std/block_X/)
+                    if !cfg.force && group_is_complete(&mvmd_blocks_group, block_name) {
                         let existing_block_group =
                             mvmd_blocks_group.group(block_name).with_context(|| {
                                 format!(
@@ -797,13 +797,14 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                         force = cfg.force,
                         "opening output block group"
                     );
-                    let mvmd_block_group =
-                        open_or_create_group(&mvmd_blocks_group, block_name, cfg.force)
-                            .with_context(|| {
-                                format!(
-                                    "failed to open/create output group {output_block_group_path}"
-                                )
-                            })?; // /04mvmd/blocks_raw/block_X/
+                    let mvmd_block_group = open_or_create_group(
+                        &mvmd_blocks_group,
+                        block_name,
+                        true,
+                    )
+                    .with_context(|| {
+                        format!("failed to open/create output group {output_block_group_path}")
+                    })?; // /04mvmd/blocks_std/block_X/
                     let block_write_start = Instant::now();
 
                     debug!(dataset_path = %format!("{output_block_group_path}/modes"), "writing output dataset");
@@ -901,7 +902,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
             })?;
 
             for trial_type in &target_trial_types {
-                let trial_group_path = format!("/02fmri_segment_trials/blocks_raw/{trial_type}");
+                let trial_group_path = format!("/02fmri_segment_trials/blocks_std/{trial_type}");
                 let trial_group = match ts_blocks_group.group(trial_type) {
                     Ok(g) => g,
                     Err(_) => {
