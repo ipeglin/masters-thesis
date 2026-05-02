@@ -46,10 +46,14 @@ fn cwt_scalogram(cfg: &AppConfig, signal: &Array2<f64>) -> (Vec<f64>, [usize; 3]
 
     let scales: Vec<f64> = (0..NUM_SCALES)
         .map(|i| {
-            // Linearly interpolate in log-space
-            let f = f_min * (f_max / f_min).powf(i as f64 / (n_scales - 1) as f64);
-            // Convert frequency to scale
-            w0 / (f * tr)
+            // 1. Calculate the target frequency for this step in log-space
+            // We go from f_max to f_min so that the resulting scales
+            // are in ascending order (standard for many CNN inputs).
+            let f = f_max * (f_min / f_max).powf(i as f64 / (NUM_SCALES - 1) as f64);
+
+            // 2. Convert physical frequency (Hz) to CWT scale
+            // Formula: s = w0 / (2 * PI * f * tr)
+            ANGULAR_FREQ / (2.0 * PI * f * tr)
         })
         .collect();
 
