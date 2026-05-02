@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::Path;
 
 /// Attribute value variants supported for HDF5 group or dataset attributes.
@@ -8,6 +8,7 @@ pub enum H5AttrValue {
     I32(i32),
     F32(f32),
     F64(f64),
+    F64Slice(Vec<f64>),
 }
 
 /// A named attribute to attach to an HDF5 group or dataset.
@@ -59,37 +60,53 @@ impl H5Attr {
 /// `hdf5::Location`, which owns `new_attr`, so this works for either.
 pub fn write_attrs(loc: &hdf5::Location, attrs: &[H5Attr]) -> Result<()> {
     for attr in attrs {
+        // Skip existing attributes for now (TODO: update them properly)
+        if loc.attr(&attr.name).is_ok() {
+            continue;
+        }
+
         match &attr.value {
             H5AttrValue::String(s) => {
                 let unicode: hdf5::types::VarLenUnicode = s.parse().unwrap();
                 loc.new_attr::<hdf5::types::VarLenUnicode>()
-                    .shape([1])
+                    .shape(())
                     .create(attr.name.as_str())?
-                    .write_raw(&[unicode])?;
+                    .as_writer()
+                    .write_scalar(&unicode)?;
             }
             H5AttrValue::U32(v) => {
                 loc.new_attr::<u32>()
-                    .shape([1])
+                    .shape(())
                     .create(attr.name.as_str())?
-                    .write_raw(&[*v])?;
+                    .as_writer()
+                    .write_scalar(v)?;
             }
             H5AttrValue::I32(v) => {
                 loc.new_attr::<i32>()
-                    .shape([1])
+                    .shape(())
                     .create(attr.name.as_str())?
-                    .write_raw(&[*v])?;
+                    .as_writer()
+                    .write_scalar(v)?;
             }
             H5AttrValue::F32(v) => {
                 loc.new_attr::<f32>()
-                    .shape([1])
+                    .shape(())
                     .create(attr.name.as_str())?
-                    .write_raw(&[*v])?;
+                    .as_writer()
+                    .write_scalar(v)?;
             }
             H5AttrValue::F64(v) => {
                 loc.new_attr::<f64>()
-                    .shape([1])
+                    .shape(())
                     .create(attr.name.as_str())?
-                    .write_raw(&[*v])?;
+                    .as_writer()
+                    .write_scalar(v)?;
+            }
+            H5AttrValue::F64Slice(v) => {
+                loc.new_attr::<f64>()
+                    .shape([v.len()]) // Define the 1D array shape
+                    .create(attr.name.as_str())?
+                    .write_raw(v)?; // Write the entire slice
             }
         }
     }
@@ -103,6 +120,70 @@ pub fn open_or_create(path: &Path) -> Result<hdf5::File> {
     } else {
         Ok(hdf5::File::create(path)?)
     }
+}
+
+/// Checks if a path (of any depth) exists relative to the parent.
+/// Works for groups, datasets, and named types.
+pub fn path_exists(parent: &hdf5::Group, path: &str) -> bool {
+    if path.is_empty() {
+        return true;
+    }
+    // HDF5's link_exists handles "a/b/c" paths directly and
+    // returns false (without warnings) if any intermediate part is missing.
+    parent.link_exists(path)
+}
+
+/// Ensures a full directory-like path of groups exists.
+/// If `force` is true, the *final* component of the path is unlinked and recreated.
+pub fn ensure_path(parent: &hdf5::Group, path: &str, force: bool) -> Result<hdf5::Group> {
+    let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let mut current = parent.clone();
+
+    for (i, &name) in parts.iter().enumerate() {
+        let is_last = i == parts.len() - 1;
+
+        if is_last && force {
+            // If it's the target and we are forcing, nuke it
+            if current.link_exists(name) {
+                current.unlink(name)?;
+            }
+            current = create_group_safe(&current, name)?;
+        } else {
+            // Otherwise, open if exists, create if missing
+            if current.link_exists(name) {
+                current = current.group(name)?;
+            } else {
+                current = create_group_safe(&current, name)?;
+            }
+        }
+    }
+
+    Ok(current)
+}
+
+/// Checks if a group (or dataset) exists.
+/// Using `link_exists` completely bypasses the HDF5 C-library stderr warnings.
+pub fn group_exists(parent: &hdf5::Group, name: &str) -> bool {
+    parent.link_exists(name)
+}
+
+/// Safely attempts to create a group, with a fallback to opening it
+/// in case it was created concurrently or the symbol table wasn't flushed.
+pub fn create_group_safe(parent: &hdf5::Group, name: &str) -> Result<hdf5::Group> {
+    match parent.create_group(name) {
+        Ok(g) => Ok(g),
+        Err(create_err) => parent
+            .group(name)
+            .map_err(|_| anyhow::anyhow!("cannot create HDF5 group '{}': {}", name, create_err)),
+    }
+}
+
+/// Drops an existing group/dataset if it exists, then creates a fresh, empty group.
+pub fn recreate_group(parent: &hdf5::Group, name: &str) -> Result<hdf5::Group> {
+    if parent.link_exists(name) {
+        parent.unlink(name)?;
+    }
+    create_group_safe(parent, name)
 }
 
 /// Opens or creates a named group at any level of the HDF5 hierarchy.
@@ -146,7 +227,7 @@ pub fn open_or_create_group(parent: &hdf5::Group, name: &str, force: bool) -> Re
 /// `data` is a flat row-major buffer; `shape` describes the N-dimensional
 /// layout (product of dims must equal `data.len()`).  `attrs` are written
 /// as dataset-level metadata if provided.
-pub fn write_dataset<T: hdf5::H5Type>(
+pub fn write_dataset_old<T: hdf5::H5Type>(
     group: &hdf5::Group,
     name: &str,
     data: &[T],
@@ -159,6 +240,55 @@ pub fn write_dataset<T: hdf5::H5Type>(
         write_attrs(&ds, attrs)?;
     }
     Ok(())
+}
+
+/// Writes a typed dataset to an already-open HDF5 group with optional overwrite.
+pub fn write_dataset<T: hdf5::H5Type>(
+    group: &hdf5::Group,
+    name: &str,
+    data: &[T],
+    shape: &[usize],
+    attrs: Option<&[H5Attr]>,
+    force: bool,
+) -> Result<()> {
+    // Handle the force-overwrite logic silently
+    if force && group.link_exists(name) {
+        group.unlink(name)?;
+    }
+
+    // Create and write
+    let ds = group
+        .new_dataset::<T>()
+        .shape(shape)
+        .create(name)
+        .with_context(|| format!("failed to create dataset '{}'", name))?;
+
+    ds.write_raw(data)?;
+
+    // Handle attributes
+    if let Some(attributes) = attrs {
+        write_attrs(&ds, attributes)?;
+    }
+
+    Ok(())
+}
+
+/// Prepares a dataset for writing, unlinking existing data if force is true.
+/// Returns the Dataset object for further manual configuration or writing.
+pub fn prepare_dataset<T: hdf5::H5Type>(
+    group: &hdf5::Group,
+    name: &str,
+    shape: &[usize],
+) -> Result<hdf5::Dataset> {
+    if group.link_exists(name) {
+        let _ = group.unlink(name);
+    }
+
+    group
+        .new_dataset::<T>()
+        .shape(shape)
+        .create(name)
+        .with_context(|| format!("failed to prepare dataset '{}'", name))
 }
 
 /// Reads all attributes from an HDF5 location (group or dataset).
@@ -248,7 +378,7 @@ pub fn append<T: hdf5::H5Type>(
     if let Some(attrs) = group_attrs {
         write_attrs(&group, attrs)?;
     }
-    write_dataset(&group, dataset_name, data, shape, dataset_attrs)
+    write_dataset_old(&group, dataset_name, data, shape, dataset_attrs)
 }
 
 /// Opens an HDF5 file and reads a typed dataset from a named group.
