@@ -32,6 +32,15 @@ impl Default for BidsFilename {
     }
 }
 
+impl fmt::Display for BidsFilename {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // self.to_path_buf() returns:
+        // - "path/to/file.nii.gz" if parent_directory is set
+        // - "file.nii.gz" if parent_directory is None
+        write!(f, "{}", self.to_path_buf().display())
+    }
+}
+
 impl BidsFilename {
     /// Creates an empty BidsFilename.
     pub fn new() -> Self {
@@ -249,12 +258,6 @@ impl BidsFilename {
     /// Checks if the *original* path (if one was provided via from_path_buf) exists.
     pub fn original_exists(&self) -> bool {
         self.path.as_ref().map_or(false, |p| p.exists())
-    }
-}
-
-impl std::fmt::Display for BidsFilename {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_filename())
     }
 }
 
