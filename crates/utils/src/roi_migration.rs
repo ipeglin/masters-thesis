@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use hdf5::types::VarLenUnicode;
 
 use crate::hdf5_io::{H5Attr, write_attrs};
