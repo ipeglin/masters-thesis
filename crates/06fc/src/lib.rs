@@ -9,7 +9,9 @@ use utils::bids_filename::BidsFilename;
 use utils::bids_subject_id::BidsSubjectId;
 use utils::config::AppConfig;
 use utils::frequency_bands::{self, SLOW_BANDS};
-use utils::hdf5_io::{H5Attr, open_or_create, open_or_create_group, write_attrs, write_dataset};
+use utils::hdf5_io::{
+    H5Attr, open_or_create, open_or_create_group, write_attrs, write_dataset_old,
+};
 use utils::roi_migration::{check_roi_fingerprint, propagate_roi_attrs};
 
 /// Clip bound for Fisher Z transform to avoid ±inf at r = ±1.
@@ -71,8 +73,8 @@ fn write_fc_pair(group: &hdf5::Group, pearson: &Array2<f64>, attrs: &[H5Attr]) -
     let shape = [pearson.nrows(), pearson.ncols()];
     let fz = fisher_z(pearson);
 
-    write_dataset(group, "pearson", pearson.as_slice().unwrap(), &shape, None)?;
-    write_dataset(group, "fisher_z", fz.as_slice().unwrap(), &shape, None)?;
+    write_dataset_old(group, "pearson", pearson.as_slice().unwrap(), &shape, None)?;
+    write_dataset_old(group, "fisher_z", fz.as_slice().unwrap(), &shape, None)?;
 
     if !attrs.is_empty() {
         write_attrs(group, attrs)?;
@@ -116,7 +118,7 @@ fn propagate_roi_indices(src: &hdf5::Group, dest: &hdf5::Group) -> Result<()> {
         return Ok(());
     }
     let data: Vec<u32> = ds.read_raw()?;
-    write_dataset(dest, "roi_indices", &data, &[data.len()], None)?;
+    write_dataset_old(dest, "roi_indices", &data, &[data.len()], None)?;
     Ok(())
 }
 
@@ -194,14 +196,14 @@ fn write_slow_band_aggregates(
 
         let pearson_back = mean_fz.mapv(|v| if v.is_nan() { f64::NAN } else { v.tanh() });
 
-        write_dataset(
+        write_dataset_old(
             &band_group,
             "fisher_z_mean",
             mean_fz.as_slice().unwrap(),
             &[n, m],
             None,
         )?;
-        write_dataset(
+        write_dataset_old(
             &band_group,
             "pearson",
             pearson_back.as_slice().unwrap(),
@@ -646,7 +648,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
 
                 match task_name {
                     "restAP" => {
-                        // CWT whole-signal scalogram on all channels
+                        // CWT full-run scalogram on all channels
                         if let Ok(cwt_root) = h5_file.group("03cwt") {
                             if let Ok(ds) = cwt_root.dataset("full_run_std") {
                                 let fc_cwt = open_or_create_group(&fc_group, "cwt", false)?;
