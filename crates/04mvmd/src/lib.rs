@@ -464,7 +464,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                         .with_admm_config(admm_config.clone());
 
                     let roi_decomposition = fr_roi_mvmd.decompose(num_modes);
-s
+
                     let mvmd_roi_duration_ms = mvmd_roi_start.elapsed().as_millis();
 
                     let fr_roi_group =
