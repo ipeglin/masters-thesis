@@ -2,7 +2,25 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use tracing::debug;
+use std::collections::BTreeSet;
+use tracing::{debug, warn};
+
+/// Replace any non-finite cell (`NaN` or `±Inf`) in `row` with 0.0 and return
+/// how many cells were replaced. Zero is the neutral post-z-score value, so a
+/// scrubbed feature behaves as the per-dim training mean — the same effect as
+/// having a missing observation. We do this rather than dropping the whole
+/// row so the classifier still sees an entry for every (subject × ROI), which
+/// matters for the per-subject probability output.
+fn scrub_row_inplace(row: &mut [f32]) -> usize {
+    let mut fixed = 0;
+    for v in row.iter_mut() {
+        if !v.is_finite() {
+            *v = 0.0;
+            fixed += 1;
+        }
+    }
+    fixed
+}
 
 use utils::bids_filename::BidsFilename;
 pub use utils::bids_subject_id::BidsSubjectId;
@@ -10,6 +28,7 @@ use utils::hdf5_io;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeatureSource {
+    Ts,
     Cwt,
     Hht,
 }
@@ -17,6 +36,7 @@ pub enum FeatureSource {
 impl FeatureSource {
     pub const fn dir(&self) -> &'static str {
         match self {
+            Self::Ts => "ts",
             Self::Cwt => "cwt",
             Self::Hht => "hht",
         }
@@ -78,7 +98,10 @@ impl AnalysisKind {
     }
 
     pub const fn is_multi_leaf(self) -> bool {
-        matches!(self, Self::BaselineChunked | Self::TaskPerBlock | Self::TaskPerBlockResized)
+        matches!(
+            self,
+            Self::BaselineChunked | Self::TaskPerBlock | Self::TaskPerBlockResized
+        )
     }
 }
 
@@ -273,6 +296,9 @@ where
     let mut ys = Vec::new();
     let mut groups = Vec::new();
     let task = kind.task();
+    let mut total_cells_scrubbed: usize = 0;
+    let mut rows_with_nonfinite: usize = 0;
+    let mut subjects_with_nonfinite: BTreeSet<String> = BTreeSet::new();
 
     for subject in subject_ids {
         let subject = subject.as_ref().to_string();
@@ -293,7 +319,17 @@ where
             for leaf in list_analysis_leaves(&file, source, kind) {
                 match read_per_roi(&file, source, kind, &leaf) {
                     Ok(rows) => {
-                        for (i, row) in rows.into_iter().enumerate() {
+                        for (i, mut row) in rows.into_iter().enumerate() {
+                            // Scrub non-finite cells (NaN / ±Inf) before any
+                            // downstream maths — z-score, KNN distances, and
+                            // ROC/PR sweeps cannot handle them and previously
+                            // caused unbounded `Vec::push` in `roc_curve`.
+                            let fixed = scrub_row_inplace(&mut row);
+                            if fixed > 0 {
+                                total_cells_scrubbed += fixed;
+                                rows_with_nonfinite += 1;
+                                subjects_with_nonfinite.insert(subject.clone());
+                            }
                             xs.push(row);
                             ys.push(label);
                             let mut g = subject.clone();
@@ -315,6 +351,21 @@ where
                 }
             }
         }
+    }
+    if total_cells_scrubbed > 0 {
+        let total_cells = xs.iter().map(|r| r.len()).sum::<usize>().max(1);
+        warn!(
+            source = ?source,
+            kind = kind.dir(),
+            cells_scrubbed = total_cells_scrubbed,
+            cells_total = total_cells,
+            fraction = format!("{:.5}", total_cells_scrubbed as f64 / total_cells as f64),
+            rows_with_nonfinite = rows_with_nonfinite,
+            n_subjects = subjects_with_nonfinite.len(),
+            subjects = ?subjects_with_nonfinite.iter().take(10).collect::<Vec<_>>(),
+            "scrubbed non-finite feature cells (replaced with 0). \
+             Investigate upstream feature extraction if fraction is large."
+        );
     }
     Ok((xs, ys, groups))
 }
@@ -338,6 +389,9 @@ where
 {
     let mut by_leaf: BTreeMap<String, (Vec<Vec<f32>>, Vec<Label>, Vec<String>)> = BTreeMap::new();
     let task = kind.task();
+    let mut total_cells_scrubbed: usize = 0;
+    let mut rows_with_nonfinite: usize = 0;
+    let mut subjects_with_nonfinite: BTreeSet<String> = BTreeSet::new();
 
     for subject in subject_ids {
         let subject = subject.as_ref().to_string();
@@ -359,7 +413,13 @@ where
                     .entry(leaf.clone())
                     .or_insert_with(|| (Vec::new(), Vec::new(), Vec::new()));
                 if let Ok(rows) = read_per_roi(&file, source, kind, &leaf) {
-                    for (i, row) in rows.into_iter().enumerate() {
+                    for (i, mut row) in rows.into_iter().enumerate() {
+                        let fixed = scrub_row_inplace(&mut row);
+                        if fixed > 0 {
+                            total_cells_scrubbed += fixed;
+                            rows_with_nonfinite += 1;
+                            subjects_with_nonfinite.insert(subject.clone());
+                        }
                         entry.0.push(row);
                         entry.1.push(label);
                         let mut g = subject.clone();
@@ -369,6 +429,26 @@ where
                 }
             }
         }
+    }
+    if total_cells_scrubbed > 0 {
+        let total_cells = by_leaf
+            .values()
+            .flat_map(|(xs, _, _)| xs.iter())
+            .map(|r| r.len())
+            .sum::<usize>()
+            .max(1);
+        warn!(
+            source = ?source,
+            kind = kind.dir(),
+            cells_scrubbed = total_cells_scrubbed,
+            cells_total = total_cells,
+            fraction = format!("{:.5}", total_cells_scrubbed as f64 / total_cells as f64),
+            rows_with_nonfinite = rows_with_nonfinite,
+            n_subjects = subjects_with_nonfinite.len(),
+            subjects = ?subjects_with_nonfinite.iter().take(10).collect::<Vec<_>>(),
+            "scrubbed non-finite feature cells (replaced with 0). \
+             Investigate upstream feature extraction if fraction is large."
+        );
     }
     Ok(by_leaf)
 }

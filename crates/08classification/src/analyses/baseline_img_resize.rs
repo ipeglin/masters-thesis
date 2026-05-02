@@ -1,5 +1,5 @@
 //! Analysis F — restAP baseline image-resized: per-ROI rows from
-//! `features/<src>/baseline_resized` over both CWT and HHT. The upstream
+//! `features/<src>/baseline_resized` over TS, CWT and HHT. The upstream
 //! feature extractor bicubicly resizes each full-run spectrogram from
 //! `[224, T_full]` → `[224, 224]` instead of chunking, producing one DenseNet
 //! image per ROI per subject.
@@ -41,7 +41,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         .collect();
     labels.retain(|k, _| subject_ids.contains(k));
 
-    for source in [FeatureSource::Cwt, FeatureSource::Hht] {
+    for source in [FeatureSource::Ts, FeatureSource::Cwt, FeatureSource::Hht] {
         let (xs, ys, groups) = build_per_roi_dataset(
             &cfg.consolidated_data_dir,
             &subject_ids,

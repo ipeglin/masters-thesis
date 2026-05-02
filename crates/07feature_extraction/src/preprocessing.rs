@@ -12,6 +12,7 @@
 //!   `[1, 3, 224, 224]`.
 
 use tch::{Kind, Tensor};
+use tracing::debug;
 use utils::config::ImageFitMode;
 
 const TARGET_H: i64 = 224;
@@ -151,33 +152,43 @@ pub fn resize_and_mean_blocks(blocks: &[Tensor], target_h: i64, target_w: i64) -
     stack_and_mean(&resized)
 }
 
-/// Quantize 2D time series to use 224 amplitude quantization levels, to match dimensions of spectrograms and scalograms
+/// Quantize a 1D or 2D time series to use `num_bins` amplitude quantization levels.
 pub fn quantize_2d_tensor(input: &Tensor, num_bins: i64, per_channel: bool) -> Tensor {
     let size = input.size();
+    let ndims = size.len();
+
     debug!(
         size = ?size,
         num_bins = ?num_bins,
         quantize_range_per_channel = per_channel,
-        "quantizing 2d tensor"
+        "quantizing tensor to image"
     );
 
-    // Determine Min/Max bounds
-    let (min, max) = if per_channel {
-        (input.amin(&[1], true), input.amax(&[1], true)) // returns (C, 1)
+    let (min, max) = if per_channel && ndims > 1 {
+        (input.amin(&[-1], true), input.amax(&[-1], true))
     } else {
-        (input.min(), input.max()) // returns scalar tensors
+        (input.min(), input.max())
     };
 
-    // 2. Scale and Quantize
+    // Scale and Quantize
     let range = &max - &min;
-    let range = range.masked_fill(&range.eq(0.0), 1.0); // Avoid division by zero if a signal is flat
+    let range = range.masked_fill(&range.eq(0.0), 1.0); // Avoid division by zero
 
-    let quantized_indices = ((input - &min) / range * (num_bins - 1) as f64)
-        .round()
-        .to_kind(Kind::Int64); // Indices 0 to 223
+    let quantized_indices = (((input - &min) / range) * ((num_bins - 1) as f64))
+        .floor()
+        .to_kind(Kind::Int64)
+        .clamp(0, num_bins - 1); // Clamp handles the "max" edge case
 
-    // 3. Transform to (C, 224, N) using One-Hot or Scatter
-    // We treat the "224" as a new dimension.
-    // One-hot creates (C, N, 224), then we permute to (C, 224, N).
-    Tensor::one_hot(&quantized_indices, num_bins).transpose(1, 2)
+    // Transform to image representation using One-Hot
+    // If input is (N,), one_hot shape is (N, 224)
+    // If input is (C, N), one_hot shape is (C, N, 224)
+    let one_hot = Tensor::one_hot(&quantized_indices, num_bins);
+
+    // Transpose to treat the Bins as the Y-axis and Time as X-axis
+    // This dynamically swaps the last two dimensions (Time and Bins)
+    // Results in (224, N) or (C, 224, N)
+    let image_tensor = one_hot.transpose(ndims as i64 - 1, ndims as i64);
+
+    // Cast to float
+    image_tensor.to_kind(Kind::Float)
 }
