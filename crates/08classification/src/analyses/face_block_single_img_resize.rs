@@ -59,8 +59,8 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
             continue;
         }
         eval_knn_three_way_split(
-            &xs,
-            &ys,
+            xs,
+            ys,
             &groups,
             cfg.classification.knn_num_neighbors,
             metric,

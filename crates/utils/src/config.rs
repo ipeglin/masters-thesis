@@ -64,9 +64,7 @@ impl AppConfig {
     /// empty.
     pub fn resolved_classification_results_dir(&self) -> PathBuf {
         if self.roi_selection.name.is_empty() {
-            self.classification_results_dir.clone()
-        } else {
-            self.classification_results_dir.join(&self.roi_selection.name)
+            return self.classification_results_dir.clone();
         }
         let mut leaf = self.roi_selection.name.clone();
         if !self.roi_selection.cortical_networks.is_empty() {

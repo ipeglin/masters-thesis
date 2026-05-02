@@ -1,7 +1,9 @@
 pub mod analyses;
+pub mod calibration;
 pub mod classifiers;
 pub mod dataset;
 pub mod eval;
+pub mod metrics;
 pub mod normalizer;
 pub mod splits;
 
