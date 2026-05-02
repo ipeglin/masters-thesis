@@ -70,7 +70,7 @@ fn cwt_scalogram(cfg: &AppConfig, signal: &Array2<f64>) -> (Vec<f64>, [usize; 3]
                     channel = ch,
                     n_channels = n_channels,
                     n_timepoints = n_timepoints,
-                    n_scales = n_scales,
+                    n_scales = NUM_SCALES,
                     "computing scalogram for channel"
                 );
             }
@@ -84,7 +84,7 @@ fn cwt_scalogram(cfg: &AppConfig, signal: &Array2<f64>) -> (Vec<f64>, [usize; 3]
             )
             .expect("scalogram computation should succeed");
 
-            let mut out: Vec<f64> = Vec::with_capacity(n_scales * n_timepoints);
+            let mut out: Vec<f64> = Vec::with_capacity(NUM_SCALES * n_timepoints);
             for scale_row in &scalo {
                 out.extend_from_slice(scale_row);
             }
@@ -92,12 +92,12 @@ fn cwt_scalogram(cfg: &AppConfig, signal: &Array2<f64>) -> (Vec<f64>, [usize; 3]
         })
         .collect();
 
-    let mut flat: Vec<f64> = Vec::with_capacity(n_channels * n_scales * n_timepoints);
+    let mut flat: Vec<f64> = Vec::with_capacity(n_channels * NUM_SCALES * n_timepoints);
     for ch_buf in per_channel {
         flat.extend(ch_buf);
     }
 
-    (flat, [n_channels, n_scales, n_timepoints])
+    (flat, [n_channels, NUM_SCALES, n_timepoints])
 }
 
 pub fn run(cfg: &AppConfig) -> Result<()> {
