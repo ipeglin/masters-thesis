@@ -301,7 +301,6 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
             if missing.all_present() {
                 skipped_count += 1;
                 info!(
-                    
                     subject_key = subject_key,
                     subject_idx = subject_idx,
                     total_subjects = total_subjects,
