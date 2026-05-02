@@ -27,7 +27,7 @@ const NUM_SCALES: usize = 224; // DenseNet201 height
 ///
 /// Returns a flat row-major buffer and the 3D shape `[n_channels, n_scales, n_timepoints]`.
 /// The buffer layout is: for each channel, for each scale, the power values over time.
-fn cwt_scalogram(signal: &Array2<f64>) -> (Vec<f64>, [usize; 3]) {
+fn cwt_scalogram(cfg: &AppConfig, signal: &Array2<f64>) -> (Vec<f64>, [usize; 3]) {
     let n_channels = signal.nrows();
     let n_timepoints = signal.ncols();
 
