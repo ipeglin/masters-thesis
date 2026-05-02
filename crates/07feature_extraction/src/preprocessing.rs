@@ -28,7 +28,12 @@ const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
 /// to the DenseNet input size.
 pub fn spectrum_to_image(spec: &Tensor, log_amp: bool, fit: ImageFitMode) -> Tensor {
     let s = if log_amp {
-        spec.log1p()
+        // Bicubic resizing of narrow-time HHT blocks (T ~ 23 → 224) introduces
+        // small negative ringing artefacts. `log1p(x)` returns NaN for `x ≤ -1`,
+        // and any NaN here propagates to `.min()`/`.max()` and through the rest
+        // of the DenseNet input, yielding 100% NaN feature vectors. Power
+        // spectra are physically `≥ 0`, so clamp to 0 before log1p.
+        spec.clamp_min(0.0).log1p()
     } else {
         spec.shallow_clone()
     };

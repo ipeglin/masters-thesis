@@ -353,9 +353,9 @@ fn write_features(
     let per_roi_buf = tensor_to_vec_f32(per_roi);
     let mean_buf = tensor_to_vec_f32(mean);
     let roi_idx_u32: Vec<u32> = ctx.roi_indices.iter().map(|&i| i as u32).collect();
-    write_dataset(&group, "per_roi", &per_roi_buf, &[n_rois, feat_dim], None)?;
-    write_dataset(&group, "mean", &mean_buf, &[feat_dim], None)?;
-    write_dataset(&group, "roi_indices", &roi_idx_u32, &[n_rois], None)?;
+    write_dataset_old(&group, "per_roi", &per_roi_buf, &[n_rois, feat_dim], None)?;
+    write_dataset_old(&group, "mean", &mean_buf, &[feat_dim], None)?;
+    write_dataset_old(&group, "roi_indices", &roi_idx_u32, &[n_rois], None)?;
     write_attrs(
         &group,
         &[
@@ -523,9 +523,9 @@ fn write_features_resized(
     let per_roi_buf = tensor_to_vec_f32(per_roi);
     let mean_buf = tensor_to_vec_f32(mean);
     let roi_idx_u32: Vec<u32> = ctx.roi_indices.iter().map(|&i| i as u32).collect();
-    write_dataset(&group, "per_roi", &per_roi_buf, &[n_rois, feat_dim], None)?;
-    write_dataset(&group, "mean", &mean_buf, &[feat_dim], None)?;
-    write_dataset(&group, "roi_indices", &roi_idx_u32, &[n_rois], None)?;
+    write_dataset_old(&group, "per_roi", &per_roi_buf, &[n_rois, feat_dim], None)?;
+    write_dataset_old(&group, "mean", &mean_buf, &[feat_dim], None)?;
+    write_dataset_old(&group, "roi_indices", &roi_idx_u32, &[n_rois], None)?;
     write_attrs(
         &group,
         &[
@@ -711,7 +711,10 @@ pub fn run_task_averaged_resized(
     let analysis = "task_averaged_resized";
     let src_g = open_or_create_group(features_root, src.group_name(), false)?;
     if already_done(&src_g, analysis, ctx.force) {
-        debug!(src = src.group_name(), "task_averaged_resized: exists, skipping");
+        debug!(
+            src = src.group_name(),
+            "task_averaged_resized: exists, skipping"
+        );
         return Ok(());
     }
     if blocks.is_empty() {
