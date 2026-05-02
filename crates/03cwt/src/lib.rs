@@ -107,10 +107,6 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
     // where POSIX locks return EAGAIN (errno 35).
     unsafe { std::env::set_var("HDF5_USE_FILE_LOCKING", "FALSE") };
 
-    let target_trial_types = vec!["face"];
-    // let group_name_blocks_raw = "blocks_raw";
-    let group_name_blocks_std = "blocks_std";
-
     info!(
         consolidated_data_dir = %cfg.consolidated_data_dir.display(),
         force = cfg.force,
