@@ -103,7 +103,50 @@ fn read_3d_as_f32(ds: &hdf5::Dataset) -> Result<(Tensor, [i64; 3])> {
     Ok((t, [a, b, c]))
 }
 
-/// CWT restAP whole-run: `/03cwt/full_run_std` `[n_rois_all, 224, T_full]`.
+/// Read a 2D dataset as f32, regardless of whether it's stored as f32 or f64.
+fn read_2d_as_f32(ds: &hdf5::Dataset) -> Result<(Tensor, [i64; 2])> {
+    let shape = ds.shape();
+    let [a, b] = match shape.as_slice() {
+        &[a, b] => [a as i64, b as i64],
+        _ => anyhow::bail!("expected 3D dataset, got shape {:?}", shape),
+    };
+    debug!(
+        shape = format!("({},{})", a, b),
+        a = a,
+        b = b,
+        "read 2D as f32"
+    );
+    let dtype = ds.dtype()?.to_descriptor()?;
+    let buf: Vec<f32> = match dtype {
+        TypeDescriptor::Float(hdf5::types::FloatSize::U8) => {
+            let raw: Vec<f64> = ds.read_raw()?;
+            raw.into_iter().map(|v| v as f32).collect()
+        }
+        TypeDescriptor::Float(hdf5::types::FloatSize::U4) => ds.read_raw()?,
+        other => anyhow::bail!("unsupported dataset dtype {:?}", other),
+    };
+    let t = Tensor::from_slice(&buf).reshape([a, b]);
+    let q = quantize_2d_tensor(&t, 224, false); // 224 amplitude quantization levels
+    Ok((q, [a, b]))
+}
+
+/// restAP time series full-run: `/01fmri_parcellation/full_run_std` `[n_rois_all, 224, T_full]`.
+/// Returns ROI-selected tensor `[n_target, 224, T_full]`.
+fn load_resting_state_full_run(h5: &hdf5::File, ctx: &AnalysisCtx) -> Result<Option<Tensor>> {
+    let cwt_root = match h5.group("01fmri_parcellation") {
+        Ok(g) => g,
+        Err(_) => return Ok(None),
+    };
+    let ds = match cwt_root.dataset("full_run_std") {
+        Ok(d) => d,
+        Err(_) => return Ok(None),
+    };
+    let (full, [n_all, _]) = read_2d_as_f32(&ds)?;
+    validate_roi_range(ctx.roi_indices, n_all, "restAP full_run_std")?;
+    Ok(Some(full.index_select(0, ctx.roi_index_tensor)))
+}
+
+/// CWT restAP full-run: `/03cwt/full_run_std` `[n_rois_all, 224, T_full]`.
 /// Returns ROI-selected tensor `[n_target, 224, T_full]`.
 fn load_cwt_full_run(h5: &hdf5::File, ctx: &AnalysisCtx) -> Result<Option<Tensor>> {
     let cwt_root = match h5.group("03cwt") {
@@ -717,6 +760,11 @@ pub fn run_for_file(ctx: &AnalysisCtx, h5: &hdf5::File) -> Result<()> {
                 run_baseline_resized(ctx, &features_root, FeatureSrc::Hht, &spec)?;
             } else {
                 debug!("restAP: no HHT full_run, skipping HHT analyses");
+            }
+            if let Some(spec) = load_resting_state_full_run(h5, ctx)? {
+                run_baseline_chunked(ctx, &features_root, FeatureSrc::Ts, &spec)?;
+            } else {
+                debug!("restAP: no full_run_std timeseries, skipping analysis")
             }
         }
         "hammerAP" => {

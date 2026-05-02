@@ -145,3 +145,34 @@ pub fn resize_and_mean_blocks(blocks: &[Tensor], target_h: i64, target_w: i64) -
         .collect();
     stack_and_mean(&resized)
 }
+
+/// Quantize 2D time series to use 224 amplitude quantization levels, to match dimensions of spectrograms and scalograms
+pub fn quantize_2d_tensor(input: &Tensor, num_bins: i64, per_channel: bool) -> Tensor {
+    let size = input.size();
+    debug!(
+        size = ?size,
+        num_bins = ?num_bins,
+        quantize_range_per_channel = per_channel,
+        "quantizing 2d tensor"
+    );
+
+    // Determine Min/Max bounds
+    let (min, max) = if per_channel {
+        (input.amin(&[1], true), input.amax(&[1], true)) // returns (C, 1)
+    } else {
+        (input.min(), input.max()) // returns scalar tensors
+    };
+
+    // 2. Scale and Quantize
+    let range = &max - &min;
+    let range = range.masked_fill(&range.eq(0.0), 1.0); // Avoid division by zero if a signal is flat
+
+    let quantized_indices = ((input - &min) / range * (num_bins - 1) as f64)
+        .round()
+        .to_kind(Kind::Int64); // Indices 0 to 223
+
+    // 3. Transform to (C, 224, N) using One-Hot or Scatter
+    // We treat the "224" as a new dimension.
+    // One-hot creates (C, N, 224), then we permute to (C, 224, N).
+    Tensor::one_hot(&quantized_indices, num_bins).transpose(1, 2)
+}
