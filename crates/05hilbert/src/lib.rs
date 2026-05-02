@@ -7,7 +7,7 @@ use utils::bids_filename::BidsFilename;
 use utils::bids_subject_id::BidsSubjectId;
 use utils::config::AppConfig;
 use utils::frequency_bands;
-use utils::hdf5_io::{H5Attr, open_or_create, open_or_create_group, write_dataset};
+use utils::hdf5_io::{H5Attr, open_or_create, open_or_create_group, write_dataset_old};
 use utils::roi_migration::{check_roi_fingerprint, propagate_roi_attrs};
 
 /// Number of log-spaced frequency bins for marginal spectra and the 2-D Hilbert
@@ -202,21 +202,21 @@ fn write_hht(
     let repetition_time: f64 = 1.0 / cfg.task_sampling_rate;
     let f_min = frequency_bands::f_min();
     let f_max = frequency_bands::f_max();
-    write_dataset(
+    write_dataset_old(
         hht_group,
         "envelope",
         &result.envelope,
         &result.envelope_shape,
         None,
     )?;
-    write_dataset(
+    write_dataset_old(
         hht_group,
         "instantaneous_frequency",
         &result.inst_freq,
         &result.inst_freq_shape,
         None,
     )?;
-    write_dataset(
+    write_dataset_old(
         hht_group,
         "frequency_axis",
         &result.freq_axis,
@@ -231,7 +231,7 @@ fn write_hht(
     )?;
 
     let marg_group = open_or_create_group(hht_group, "marginal_spectra", force)?;
-    write_dataset(
+    write_dataset_old(
         &marg_group,
         "spectra",
         &result.marginal_spectra,
@@ -239,7 +239,7 @@ fn write_hht(
         None,
     )?;
 
-    write_dataset(
+    write_dataset_old(
         hht_group,
         "full_spectrum",
         &result.full_spectrum,
@@ -250,7 +250,7 @@ fn write_hht(
         )]),
     )?;
 
-    write_dataset(
+    write_dataset_old(
         hht_group,
         "hilbert_spectrum",
         &result.hilbert_spectrum,
@@ -273,7 +273,7 @@ fn propagate_roi_indices(src: &hdf5::Group, dest: &hdf5::Group) -> Result<()> {
         return Ok(());
     }
     let data: Vec<u32> = ds.read_raw()?;
-    write_dataset(dest, "roi_indices", &data, &[data.len()], None)?;
+    write_dataset_old(dest, "roi_indices", &data, &[data.len()], None)?;
     Ok(())
 }
 
@@ -530,7 +530,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                             cfg,
                             &mvmd_group,
                             &hht_group,
-                            "full_run_raw",
+                            "full_run_std",
                             task_name,
                             false,
                         )?;
@@ -539,7 +539,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                                 cfg,
                                 &mvmd_group,
                                 &hht_group,
-                                "full_run_raw_roi",
+                                "full_run_std_roi",
                                 task_name,
                                 true,
                             )?;
@@ -550,7 +550,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                             cfg,
                             &mvmd_group,
                             &hht_group,
-                            "blocks_raw",
+                            "blocks_std",
                             task_name,
                             &mut error_count,
                             false,
@@ -560,7 +560,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                                 cfg,
                                 &mvmd_group,
                                 &hht_group,
-                                "blocks_raw_roi",
+                                "blocks_std_roi",
                                 task_name,
                                 &mut error_count,
                                 true,
@@ -568,10 +568,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                         }
                     }
                     other => {
-                        debug!(
-                            task_name = other,
-                            "unrecognized task type, skipping HHT"
-                        );
+                        debug!(task_name = other, "unrecognized task type, skipping HHT");
                     }
                 }
 

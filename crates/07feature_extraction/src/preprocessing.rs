@@ -12,6 +12,7 @@
 //!   `[1, 3, 224, 224]`.
 
 use tch::{Kind, Tensor};
+use tracing::debug;
 use utils::config::ImageFitMode;
 
 const TARGET_H: i64 = 224;
@@ -28,7 +29,12 @@ const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
 /// to the DenseNet input size.
 pub fn spectrum_to_image(spec: &Tensor, log_amp: bool, fit: ImageFitMode) -> Tensor {
     let s = if log_amp {
-        spec.log1p()
+        // Bicubic resizing of narrow-time HHT blocks (T ~ 23 → 224) introduces
+        // small negative ringing artefacts. `log1p(x)` returns NaN for `x ≤ -1`,
+        // and any NaN here propagates to `.min()`/`.max()` and through the rest
+        // of the DenseNet input, yielding 100% NaN feature vectors. Power
+        // spectra are physically `≥ 0`, so clamp to 0 before log1p.
+        spec.clamp_min(0.0).log1p()
     } else {
         spec.shallow_clone()
     };
@@ -144,4 +150,45 @@ pub fn resize_and_mean_blocks(blocks: &[Tensor], target_h: i64, target_w: i64) -
         .map(|b| resize_along_freq_time(b, target_h, target_w).contiguous())
         .collect();
     stack_and_mean(&resized)
+}
+
+/// Quantize a 1D or 2D time series to use `num_bins` amplitude quantization levels.
+pub fn quantize_2d_tensor(input: &Tensor, num_bins: i64, per_channel: bool) -> Tensor {
+    let size = input.size();
+    let ndims = size.len();
+
+    debug!(
+        size = ?size,
+        num_bins = ?num_bins,
+        quantize_range_per_channel = per_channel,
+        "quantizing tensor to image"
+    );
+
+    let (min, max) = if per_channel && ndims > 1 {
+        (input.amin(&[-1], true), input.amax(&[-1], true))
+    } else {
+        (input.min(), input.max())
+    };
+
+    // Scale and Quantize
+    let range = &max - &min;
+    let range = range.masked_fill(&range.eq(0.0), 1.0); // Avoid division by zero
+
+    let quantized_indices = (((input - &min) / range) * ((num_bins - 1) as f64))
+        .floor()
+        .to_kind(Kind::Int64)
+        .clamp(0, num_bins - 1); // Clamp handles the "max" edge case
+
+    // Transform to image representation using One-Hot
+    // If input is (N,), one_hot shape is (N, 224)
+    // If input is (C, N), one_hot shape is (C, N, 224)
+    let one_hot = Tensor::one_hot(&quantized_indices, num_bins);
+
+    // Transpose to treat the Bins as the Y-axis and Time as X-axis
+    // This dynamically swaps the last two dimensions (Time and Bins)
+    // Results in (224, N) or (C, 224, N)
+    let image_tensor = one_hot.transpose(ndims as i64 - 1, ndims as i64);
+
+    // Cast to float
+    image_tensor.to_kind(Kind::Float)
 }

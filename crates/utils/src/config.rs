@@ -56,14 +56,24 @@ impl AppConfig {
     /// Resolved output directory for classification result JSON files. The
     /// configured `classification_results_dir` is suffixed with the active
     /// `roi_selection.name` so different ROI selections (e.g. `vpfc_mpfc_amy`
-    /// vs `dmn`) write to disjoint subdirectories. Falls back to the unsuffixed
-    /// directory when `roi_selection.name` is empty.
+    /// vs `dmn`) write to disjoint subdirectories. When
+    /// `roi_selection.cortical_networks` is non-empty the leaf is further
+    /// suffixed with `__net-{sorted_networks.join('_')}` so swapping the
+    /// network filter under the same `name` does not overwrite prior results.
+    /// Falls back to the unsuffixed directory when `roi_selection.name` is
+    /// empty.
     pub fn resolved_classification_results_dir(&self) -> PathBuf {
         if self.roi_selection.name.is_empty() {
-            self.classification_results_dir.clone()
-        } else {
-            self.classification_results_dir.join(&self.roi_selection.name)
+            return self.classification_results_dir.clone();
         }
+        let mut leaf = self.roi_selection.name.clone();
+        if !self.roi_selection.cortical_networks.is_empty() {
+            let mut nets = self.roi_selection.cortical_networks.clone();
+            nets.sort();
+            leaf.push_str("__net-");
+            leaf.push_str(&nets.join("_"));
+        }
+        self.classification_results_dir.join(leaf)
     }
 }
 
@@ -349,6 +359,30 @@ mod tests {
         assert_eq!(
             cfg.resolved_classification_results_dir(),
             PathBuf::from("/results")
+        );
+    }
+
+    #[test]
+    fn resolved_classification_results_dir_appends_sorted_networks() {
+        let mut cfg = AppConfig::default();
+        cfg.classification_results_dir = PathBuf::from("/results");
+        cfg.roi_selection.name = "vpfc_mpfc_amy".to_string();
+        cfg.roi_selection.cortical_networks = vec!["LimbicB".to_string(), "LimbicA".to_string()];
+        assert_eq!(
+            cfg.resolved_classification_results_dir(),
+            PathBuf::from("/results/vpfc_mpfc_amy__net-LimbicA_LimbicB")
+        );
+    }
+
+    #[test]
+    fn resolved_classification_results_dir_no_network_suffix_when_empty() {
+        let mut cfg = AppConfig::default();
+        cfg.classification_results_dir = PathBuf::from("/results");
+        cfg.roi_selection.name = "vpfc_mpfc_amy".to_string();
+        cfg.roi_selection.cortical_networks = vec![];
+        assert_eq!(
+            cfg.resolved_classification_results_dir(),
+            PathBuf::from("/results/vpfc_mpfc_amy")
         );
     }
 }

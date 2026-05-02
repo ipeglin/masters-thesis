@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use hdf5::types::VarLenUnicode;
 
 use crate::hdf5_io::{H5Attr, write_attrs};
@@ -32,7 +32,12 @@ fn read_u32_attr(loc: &hdf5::Location, name: &str) -> Result<Option<u32>> {
 /// that downstream fingerprint checks remain valid through the pipeline.
 pub fn propagate_roi_attrs(src: &hdf5::Location, dest: &hdf5::Location) -> Result<()> {
     let mut attrs: Vec<H5Attr> = Vec::new();
-    for name in ["roi_selection_fingerprint", "roi_selection_name", "roi_matched_regions", "roi_labels"] {
+    for name in [
+        "roi_selection_fingerprint",
+        "roi_selection_name",
+        "roi_matched_regions",
+        "roi_labels",
+    ] {
         if dest.attr(name).is_ok() {
             continue;
         }

@@ -21,7 +21,7 @@ impl Default for ADMMConfig {
         Self {
             tolerance: 1e-3,
             tau: 1e-2,
-            max_iterations: 1000,
+            max_iterations: 3000,
         }
     }
 }

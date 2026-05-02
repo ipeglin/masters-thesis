@@ -23,13 +23,13 @@ use std::time::Instant;
 use tch::{Kind, Tensor};
 use tracing::{debug, info};
 use utils::config::ImageFitMode;
-use utils::hdf5_io::{H5Attr, open_or_create_group, write_attrs, write_dataset};
+use utils::hdf5_io::{H5Attr, open_or_create_group, write_attrs, write_dataset_old};
 use utils::roi_migration::check_roi_fingerprint;
 
 use crate::FeatureExtractor;
 use crate::preprocessing::{
-    batch_spectrum_to_input, chunk_along_time, resize_and_mean_blocks, shuffled_concat,
-    stack_and_mean, trim_and_mean_blocks,
+    batch_spectrum_to_input, chunk_along_time, quantize_2d_tensor, resize_and_mean_blocks,
+    shuffled_concat, stack_and_mean, trim_and_mean_blocks,
 };
 
 pub const CHUNK_COUNT: i64 = 3;
@@ -39,6 +39,7 @@ pub const SHUFFLE_SEED: u64 = 42;
 /// Which upstream spectrum source feeds the analysis.
 #[derive(Debug, Clone, Copy)]
 pub enum FeatureSrc {
+    Ts,
     Cwt,
     Hht,
 }
@@ -46,6 +47,7 @@ pub enum FeatureSrc {
 impl FeatureSrc {
     pub fn group_name(self) -> &'static str {
         match self {
+            FeatureSrc::Ts => "ts",
             FeatureSrc::Cwt => "cwt",
             FeatureSrc::Hht => "hht",
         }
@@ -103,7 +105,97 @@ fn read_3d_as_f32(ds: &hdf5::Dataset) -> Result<(Tensor, [i64; 3])> {
     Ok((t, [a, b, c]))
 }
 
-/// CWT restAP whole-run: `/03cwt/full_run_std` `[n_rois_all, 224, T_full]`.
+/// Read a 2D dataset as f32, regardless of whether it's stored as f32 or f64.
+fn read_2d_as_f32(ds: &hdf5::Dataset) -> Result<(Tensor, [i64; 2])> {
+    let shape = ds.shape();
+    let [a, b] = match shape.as_slice() {
+        &[a, b] => [a as i64, b as i64],
+        _ => anyhow::bail!("expected 3D dataset, got shape {:?}", shape),
+    };
+    debug!(
+        shape = format!("({},{})", a, b),
+        a = a,
+        b = b,
+        "read 2D as f32"
+    );
+    let dtype = ds.dtype()?.to_descriptor()?;
+    let buf: Vec<f32> = match dtype {
+        TypeDescriptor::Float(hdf5::types::FloatSize::U8) => {
+            let raw: Vec<f64> = ds.read_raw()?;
+            raw.into_iter().map(|v| v as f32).collect()
+        }
+        TypeDescriptor::Float(hdf5::types::FloatSize::U4) => ds.read_raw()?,
+        other => anyhow::bail!("unsupported dataset dtype {:?}", other),
+    };
+    let t = Tensor::from_slice(&buf).reshape([a, b]);
+    Ok((t, [a, b]))
+}
+
+/// restAP time series full-run: `/01fmri_parcellation/full_run_std` `[n_rois_all, 224, T_full]`.
+/// Returns ROI-selected tensor `[n_target, 224, T_full]`.
+fn load_resting_state_full_run(h5: &hdf5::File, ctx: &AnalysisCtx) -> Result<Option<Tensor>> {
+    let cwt_root = match h5.group("01fmri_parcellation") {
+        Ok(g) => g,
+        Err(_) => return Ok(None),
+    };
+    let ds = match cwt_root.dataset("full_run_std") {
+        Ok(d) => d,
+        Err(_) => return Ok(None),
+    };
+    let (full, [n_all, _]) = read_2d_as_f32(&ds)?;
+    validate_roi_range(ctx.roi_indices, n_all, "restAP full_run_std")?;
+
+    let selected = full.index_select(0, ctx.roi_index_tensor);
+    let min_val = selected.min().double_value(&[]);
+    let max_val = selected.max().double_value(&[]);
+    debug!("DEBUG RANGE: min={:.6?}, max={:.6?}", min_val, max_val);
+
+    let sample_val = selected.get(0).get(0).double_value(&[]);
+    debug!(
+        "DEBUG SAMPLE: Local Index 0, Time 0 raw value = {:.6?}",
+        sample_val
+    );
+
+    let quantized = quantize_2d_tensor(&selected, 224, false);
+
+    // if ctx.subject_id == "sub-NDARINVAG388HJL" {
+    //     let nonzero_indices = quantized.eq(1.0).nonzero();
+
+    //     // Enumerate so we have 'i' (the index in the new tensor)
+    //     // and 'original_roi_idx' (the actual ROI number)
+    //     for (i, &original_roi_idx) in ctx.roi_indices.iter().enumerate() {
+    //         // Search for 'i' (0, 1, 2...) in the quantized tensor
+    //         let roi_mask = nonzero_indices.select(1, 0).eq(i as i64);
+
+    //         let sum_as_tensor = roi_mask.sum(Kind::Int64);
+    //         if sum_as_tensor.int64_value(&[]) > 0 {
+    //             let roi_locations = nonzero_indices.index_select(0, &roi_mask.nonzero().squeeze());
+    //             let mut locations_vec = Vec::new();
+
+    //             for j in 0..roi_locations.size()[0] {
+    //                 let amp = roi_locations.get(j).get(1).int64_value(&[]);
+    //                 let time = roi_locations.get(j).get(2).int64_value(&[]);
+    //                 locations_vec.push((time, amp));
+    //             }
+
+    //             locations_vec.sort_by_key(|&(time, _)| time);
+    //             let num_to_log = locations_vec.len().min(20);
+
+    //             warn!(
+    //                 "VERIFICATION: Channel {:03} (Local Index {}) — First {} samples: {:?}",
+    //                 original_roi_idx,
+    //                 i,
+    //                 num_to_log,
+    //                 &locations_vec[..num_to_log]
+    //             );
+    //         }
+    //     }
+    // }
+
+    Ok(Some(quantized))
+}
+
+/// CWT restAP full-run: `/03cwt/full_run_std` `[n_rois_all, 224, T_full]`.
 /// Returns ROI-selected tensor `[n_target, 224, T_full]`.
 fn load_cwt_full_run(h5: &hdf5::File, ctx: &AnalysisCtx) -> Result<Option<Tensor>> {
     let cwt_root = match h5.group("03cwt") {
@@ -146,7 +238,7 @@ fn load_cwt_blocks(h5: &hdf5::File, ctx: &AnalysisCtx) -> Result<Vec<(String, Te
     Ok(out)
 }
 
-/// HHT restAP whole-run: `/05hht/full_run_raw_roi/hilbert_spectrum`
+/// HHT restAP whole-run: `/05hht/full_run_std_roi/hilbert_spectrum`
 /// `[n_target, 224, T_full]` (already ROI-selected upstream by 04mvmd / 05hilbert).
 /// Bails on `roi_selection_fingerprint` mismatch — the upstream `_roi` group must
 /// match the current `[roi_selection]` config.
@@ -155,14 +247,14 @@ fn load_hht_full_run(h5: &hdf5::File, ctx: &AnalysisCtx) -> Result<Option<Tensor
         Ok(g) => g,
         Err(_) => return Ok(None),
     };
-    let sub = match hht_root.group("full_run_raw_roi") {
+    let sub = match hht_root.group("full_run_std_roi") {
         Ok(g) => g,
         Err(_) => return Ok(None),
     };
     check_roi_fingerprint(
         &sub,
         ctx.roi_selection_fingerprint,
-        "/05hht/full_run_raw_roi",
+        "/05hht/full_run_std_roi",
     )?;
     let ds = match sub.dataset("hilbert_spectrum") {
         Ok(d) => d,
@@ -171,7 +263,7 @@ fn load_hht_full_run(h5: &hdf5::File, ctx: &AnalysisCtx) -> Result<Option<Tensor
     let (t, [n_rows, _, _]) = read_3d_as_f32(&ds)?;
     if (n_rows as usize) != ctx.roi_indices.len() {
         anyhow::bail!(
-            "hht full_run_raw_roi rows {} != target ROI count {} — atlas mismatch",
+            "hht full_run_std_roi rows {} != target ROI count {} — atlas mismatch",
             n_rows,
             ctx.roi_indices.len()
         );
@@ -179,7 +271,7 @@ fn load_hht_full_run(h5: &hdf5::File, ctx: &AnalysisCtx) -> Result<Option<Tensor
     Ok(Some(t))
 }
 
-/// HHT hammerAP face blocks: `/05hht/blocks_raw_roi/<block>/hilbert_spectrum`
+/// HHT hammerAP face blocks: `/05hht/blocks_std_roi/<block>/hilbert_spectrum`
 /// (already ROI-selected upstream). Bails on `roi_selection_fingerprint`
 /// mismatch on each block group.
 fn load_hht_blocks(h5: &hdf5::File, ctx: &AnalysisCtx) -> Result<Vec<(String, Tensor)>> {
@@ -187,7 +279,7 @@ fn load_hht_blocks(h5: &hdf5::File, ctx: &AnalysisCtx) -> Result<Vec<(String, Te
         Ok(g) => g,
         Err(_) => return Ok(vec![]),
     };
-    let blocks = match hht_root.group("blocks_raw_roi") {
+    let blocks = match hht_root.group("blocks_std_roi") {
         Ok(g) => g,
         Err(_) => return Ok(vec![]),
     };
@@ -203,7 +295,7 @@ fn load_hht_blocks(h5: &hdf5::File, ctx: &AnalysisCtx) -> Result<Vec<(String, Te
         check_roi_fingerprint(
             &g,
             ctx.roi_selection_fingerprint,
-            &format!("/05hht/blocks_raw_roi/{name}"),
+            &format!("/05hht/blocks_std_roi/{name}"),
         )?;
         let ds = match g.dataset("hilbert_spectrum") {
             Ok(d) => d,
@@ -212,7 +304,7 @@ fn load_hht_blocks(h5: &hdf5::File, ctx: &AnalysisCtx) -> Result<Vec<(String, Te
         let (t, [n_rows, _, _]) = read_3d_as_f32(&ds)?;
         if (n_rows as usize) != ctx.roi_indices.len() {
             anyhow::bail!(
-                "hht blocks_raw_roi/{} rows {} != target ROI count {}",
+                "hht blocks_std_roi/{} rows {} != target ROI count {}",
                 name,
                 n_rows,
                 ctx.roi_indices.len()
@@ -310,9 +402,9 @@ fn write_features(
     let per_roi_buf = tensor_to_vec_f32(per_roi);
     let mean_buf = tensor_to_vec_f32(mean);
     let roi_idx_u32: Vec<u32> = ctx.roi_indices.iter().map(|&i| i as u32).collect();
-    write_dataset(&group, "per_roi", &per_roi_buf, &[n_rois, feat_dim], None)?;
-    write_dataset(&group, "mean", &mean_buf, &[feat_dim], None)?;
-    write_dataset(&group, "roi_indices", &roi_idx_u32, &[n_rois], None)?;
+    write_dataset_old(&group, "per_roi", &per_roi_buf, &[n_rois, feat_dim], None)?;
+    write_dataset_old(&group, "mean", &mean_buf, &[feat_dim], None)?;
+    write_dataset_old(&group, "roi_indices", &roi_idx_u32, &[n_rois], None)?;
     write_attrs(
         &group,
         &[
@@ -480,9 +572,9 @@ fn write_features_resized(
     let per_roi_buf = tensor_to_vec_f32(per_roi);
     let mean_buf = tensor_to_vec_f32(mean);
     let roi_idx_u32: Vec<u32> = ctx.roi_indices.iter().map(|&i| i as u32).collect();
-    write_dataset(&group, "per_roi", &per_roi_buf, &[n_rois, feat_dim], None)?;
-    write_dataset(&group, "mean", &mean_buf, &[feat_dim], None)?;
-    write_dataset(&group, "roi_indices", &roi_idx_u32, &[n_rois], None)?;
+    write_dataset_old(&group, "per_roi", &per_roi_buf, &[n_rois, feat_dim], None)?;
+    write_dataset_old(&group, "mean", &mean_buf, &[feat_dim], None)?;
+    write_dataset_old(&group, "roi_indices", &roi_idx_u32, &[n_rois], None)?;
     write_attrs(
         &group,
         &[
@@ -656,7 +748,7 @@ pub fn run_task_per_block_resized(
 // Strategy H — hammerAP, image-resized blocks averaged
 // ---------------------------------------------------------------------------
 
-/// Bicubicly resize each block's raw spectrum to `224×224`, mean across
+/// Bicubicly resize each block's std spectrum to `224×224`, mean across
 /// blocks per ROI, then run the averaged image through DenseNet. Written
 /// under `features/<src>/task_averaged_resized`.
 pub fn run_task_averaged_resized(
@@ -668,7 +760,10 @@ pub fn run_task_averaged_resized(
     let analysis = "task_averaged_resized";
     let src_g = open_or_create_group(features_root, src.group_name(), false)?;
     if already_done(&src_g, analysis, ctx.force) {
-        debug!(src = src.group_name(), "task_averaged_resized: exists, skipping");
+        debug!(
+            src = src.group_name(),
+            "task_averaged_resized: exists, skipping"
+        );
         return Ok(());
     }
     if blocks.is_empty() {
@@ -717,6 +812,12 @@ pub fn run_for_file(ctx: &AnalysisCtx, h5: &hdf5::File) -> Result<()> {
                 run_baseline_resized(ctx, &features_root, FeatureSrc::Hht, &spec)?;
             } else {
                 debug!("restAP: no HHT full_run, skipping HHT analyses");
+            }
+            if let Some(spec) = load_resting_state_full_run(h5, ctx)? {
+                run_baseline_chunked(ctx, &features_root, FeatureSrc::Ts, &spec)?;
+                run_baseline_resized(ctx, &features_root, FeatureSrc::Ts, &spec)?;
+            } else {
+                debug!("restAP: no full_run_std timeseries, skipping analysis")
             }
         }
         "hammerAP" => {

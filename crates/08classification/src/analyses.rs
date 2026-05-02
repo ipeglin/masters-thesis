@@ -5,6 +5,6 @@ pub mod block_ensemble;
 pub mod face_block_averaging;
 pub mod face_block_averaging_img_resize;
 pub mod face_block_concatenation;
-pub mod face_block_single_img_resize;
 pub mod face_block_single;
+pub mod face_block_single_img_resize;
 pub mod subject_stratified;

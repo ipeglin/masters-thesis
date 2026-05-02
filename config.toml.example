@@ -42,9 +42,21 @@ knn_metric = "cosine" # cosine | euclidean | mahalanobis | mahalanobis_diag
 # Single source of truth for which atlas rows the spec-dependent stages
 # (04mvmd `_roi`, 05hilbert `_roi`, 06fc `_roi`, 07feature_extraction)
 # operate on. Cortical regions match exactly against the Yeo region label
-# (e.g. "PFCm"). Subcortical regions match by substring against the Tian
-# region label (e.g. "AMY" catches both "lAMY" and "mAMY").
+# (e.g. "PFCm"). Cortical networks match exactly against the Yeo network
+# label (e.g. "LimbicA", "LimbicB", "DefaultA"); when both `cortical_regions`
+# and `cortical_networks` are set, the intersection is selected. An empty
+# list on either axis means "no constraint on that axis" — leaving
+# `cortical_networks` empty includes all networks for the listed regions,
+# while leaving `cortical_regions` empty includes all regions in the listed
+# networks. Subcortical regions match by substring against the Tian region
+# label (e.g. "AMY" catches both "lAMY" and "mAMY").
+#
+# Example: limit to limbic cortical PFC + AMY subcortical:
+#   cortical_regions = ["PFCv", "PFCm"]
+#   cortical_networks = ["LimbicA", "LimbicB"]
+#   subcortical_regions = ["AMY"]
 [roi_selection]
 name = "vpfc_mpfc_amy"
 cortical_regions = ["PFCv", "PFCm"]
+cortical_networks = []
 subcortical_regions = ["AMY"]

@@ -6,10 +6,12 @@
 /// all derive `f_min` / `f_max` from this table so every spectral representation
 /// shares one consistent frequency window.
 pub const SLOW_BANDS: &[(&str, f64, f64)] = &[
+    ("slow_5_trunc", 0.005, 0.010),
     ("slow_5", 0.010, 0.027),
     ("slow_4", 0.027, 0.073),
     ("slow_3", 0.073, 0.198),
-    ("slow_2", 0.198, 0.500),
+    ("slow_2_trunc", 0.198, 0.250),
+    // ("slow_2", 0.198, 0.500),
 ];
 
 /// Lowest frequency covered by `SLOW_BANDS` (inclusive lower bound of the lowest band).

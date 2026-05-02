@@ -189,17 +189,34 @@ impl BrainAtlas {
             .collect()
     }
 
-    /// Resolve a `RoiSelectionSpec` against this atlas. Cortical regions match
-    /// exactly (e.g. `"PFCm"`); subcortical regions match by substring (so
-    /// `"AMY"` catches both `lAMY-lh` and `mAMY-rh`). Returned rows are sorted
-    /// by `row_index` for deterministic ordering downstream.
+    /// Resolve a `RoiSelectionSpec` against this atlas. Cortical entries are
+    /// matched by intersection of `cortical_regions` (exact match against
+    /// `RoiType::Cortical.region`, e.g. `"PFCm"`) and `cortical_networks`
+    /// (exact match against `RoiType::Cortical.network`, e.g. `"LimbicA"`).
+    /// An empty list on either axis means "no constraint on this axis"; if
+    /// both lists are empty, no cortical rows are selected (i.e. cortical
+    /// inclusion requires at least one axis to be specified). Subcortical
+    /// regions match by substring (so `"AMY"` catches `lAMY-lh` and
+    /// `mAMY-rh`). Returned rows are sorted by `row_index` for deterministic
+    /// ordering downstream.
     pub fn selected_rois(&self, spec: &RoiSelectionSpec) -> Vec<SelectedRoi> {
+        let cortical_active =
+            !spec.cortical_regions.is_empty() || !spec.cortical_networks.is_empty();
         let mut out: Vec<SelectedRoi> = self
             .entries
             .iter()
             .filter_map(|e| match &e.metadata {
-                RoiType::Cortical { region, .. } => {
-                    if spec.cortical_regions.iter().any(|r| r == region) {
+                RoiType::Cortical {
+                    region, network, ..
+                } => {
+                    if !cortical_active {
+                        return None;
+                    }
+                    let region_ok = spec.cortical_regions.is_empty()
+                        || spec.cortical_regions.iter().any(|r| r == region);
+                    let network_ok = spec.cortical_networks.is_empty()
+                        || spec.cortical_networks.iter().any(|n| n == network);
+                    if region_ok && network_ok {
                         Some(SelectedRoi {
                             row_index: e.index as usize,
                             label: e.id.clone(),
@@ -254,6 +271,13 @@ pub struct SelectedRoi {
 /// the spec-dependent pipeline stages (04mvmd `_roi`, 05hilbert `_roi`,
 /// 06fc `_roi`, 07feature_extraction). Empty cortical+subcortical lists mean
 /// "no subset" — currently only relevant for future "all ROIs" mode.
+///
+/// Cortical filtering combines `cortical_regions` and `cortical_networks` as
+/// an intersection: a cortical ROI is included only when it matches every
+/// axis that has a non-empty list. An empty list on a given axis means "no
+/// constraint on this axis" (e.g. empty `cortical_networks` = all networks
+/// allowed). Cortical inclusion still requires at least one axis to be
+/// specified — leaving both empty selects no cortical rows.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct RoiSelectionSpec {
     /// Human-readable identifier used in HDF5 attrs and output dir naming.
@@ -262,6 +286,10 @@ pub struct RoiSelectionSpec {
     /// Exact match against `RoiType::Cortical.region` (e.g. `"PFCm"`).
     #[serde(default)]
     pub cortical_regions: Vec<String>,
+    /// Exact match against `RoiType::Cortical.network` (e.g. `"LimbicA"`).
+    /// Intersected with `cortical_regions` when both are non-empty.
+    #[serde(default)]
+    pub cortical_networks: Vec<String>,
     /// Substring match against `RoiType::Subcortical.region` (e.g. `"AMY"`
     /// catches `lAMY` and `mAMY`).
     #[serde(default)]
@@ -270,18 +298,32 @@ pub struct RoiSelectionSpec {
 
 impl RoiSelectionSpec {
     pub fn is_empty(&self) -> bool {
-        self.cortical_regions.is_empty() && self.subcortical_regions.is_empty()
+        self.cortical_regions.is_empty()
+            && self.cortical_networks.is_empty()
+            && self.subcortical_regions.is_empty()
     }
 
     /// Stable string identifier used for migration checks. Mismatch between
     /// stored fingerprint on an HDF5 group and the current config means the
     /// data was produced under a different selection and must be regenerated.
+    ///
+    /// Format: `"{name}:{cortical_regions}|{subcortical_regions}"` when
+    /// `cortical_networks` is empty (preserves fingerprints for configs that
+    /// never opt into network filtering). When networks are specified the
+    /// suffix `|net={cortical_networks}` is appended.
     pub fn fingerprint(&self) -> String {
         let mut cort = self.cortical_regions.clone();
         cort.sort();
         let mut subc = self.subcortical_regions.clone();
         subc.sort();
-        format!("{}:{}|{}", self.name, cort.join(","), subc.join(","))
+        let base = format!("{}:{}|{}", self.name, cort.join(","), subc.join(","));
+        if self.cortical_networks.is_empty() {
+            base
+        } else {
+            let mut nets = self.cortical_networks.clone();
+            nets.sort();
+            format!("{}|net={}", base, nets.join(","))
+        }
     }
 }
 
@@ -321,4 +363,123 @@ pub fn load_subcortical_lut(filename: &Path) -> HashMap<String, u32> {
         subcortical_roi_map.insert(roi_id, index as u32);
     }
     subcortical_roi_map
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture_atlas() -> BrainAtlas {
+        let mut cort = HashMap::new();
+        cort.insert("17networks_LH_LimbicA_PFCm_1".to_string(), 0);
+        cort.insert("17networks_RH_LimbicA_PFCm_1".to_string(), 1);
+        cort.insert("17networks_LH_LimbicB_PFCv_1".to_string(), 2);
+        cort.insert("17networks_RH_LimbicB_PFCv_1".to_string(), 3);
+        cort.insert("17networks_LH_DefaultA_PFCm_1".to_string(), 4);
+        cort.insert("17networks_LH_DefaultB_PFCv_1".to_string(), 5);
+        cort.insert("17networks_LH_DefaultA_pCun_1".to_string(), 6);
+
+        let mut subc = HashMap::new();
+        subc.insert("lAMY-lh".to_string(), 0);
+        subc.insert("mAMY-rh".to_string(), 1);
+        subc.insert("HIP-lh".to_string(), 2);
+
+        BrainAtlas::from_lut_maps(cort, subc)
+    }
+
+    #[test]
+    fn region_only_selects_all_networks_in_region() {
+        let atlas = fixture_atlas();
+        let spec = RoiSelectionSpec {
+            name: "t".into(),
+            cortical_regions: vec!["PFCm".into()],
+            cortical_networks: vec![],
+            subcortical_regions: vec![],
+        };
+        let sel = atlas.selected_rois(&spec);
+        let labels: Vec<&str> = sel.iter().map(|r| r.label.as_str()).collect();
+        assert!(labels.contains(&"17networks_LH_LimbicA_PFCm_1"));
+        assert!(labels.contains(&"17networks_RH_LimbicA_PFCm_1"));
+        assert!(labels.contains(&"17networks_LH_DefaultA_PFCm_1"));
+        assert_eq!(sel.len(), 3);
+    }
+
+    #[test]
+    fn network_only_selects_all_regions_in_network() {
+        let atlas = fixture_atlas();
+        let spec = RoiSelectionSpec {
+            name: "t".into(),
+            cortical_regions: vec![],
+            cortical_networks: vec!["LimbicA".into(), "LimbicB".into()],
+            subcortical_regions: vec![],
+        };
+        let sel = atlas.selected_rois(&spec);
+        let labels: Vec<&str> = sel.iter().map(|r| r.label.as_str()).collect();
+        assert!(labels.contains(&"17networks_LH_LimbicA_PFCm_1"));
+        assert!(labels.contains(&"17networks_RH_LimbicA_PFCm_1"));
+        assert!(labels.contains(&"17networks_LH_LimbicB_PFCv_1"));
+        assert!(labels.contains(&"17networks_RH_LimbicB_PFCv_1"));
+        assert_eq!(sel.len(), 4);
+    }
+
+    #[test]
+    fn region_and_network_intersect() {
+        let atlas = fixture_atlas();
+        let spec = RoiSelectionSpec {
+            name: "t".into(),
+            cortical_regions: vec!["PFCv".into(), "PFCm".into()],
+            cortical_networks: vec!["LimbicA".into(), "LimbicB".into()],
+            subcortical_regions: vec![],
+        };
+        let sel = atlas.selected_rois(&spec);
+        assert_eq!(sel.len(), 4);
+        for r in &sel {
+            assert!(r.label.contains("Limbic"));
+            assert!(r.label.contains("PFC"));
+        }
+    }
+
+    #[test]
+    fn empty_cortical_filters_match_no_cortical() {
+        let atlas = fixture_atlas();
+        let spec = RoiSelectionSpec {
+            name: "t".into(),
+            cortical_regions: vec![],
+            cortical_networks: vec![],
+            subcortical_regions: vec!["AMY".into()],
+        };
+        let sel = atlas.selected_rois(&spec);
+        assert_eq!(sel.len(), 2);
+        assert!(sel.iter().all(|r| r.kind == "subcortical"));
+    }
+
+    #[test]
+    fn fingerprint_backward_compat_when_networks_empty() {
+        let spec = RoiSelectionSpec {
+            name: "vpfc_mpfc_amy".into(),
+            cortical_regions: vec!["PFCm".into(), "PFCv".into()],
+            cortical_networks: vec![],
+            subcortical_regions: vec!["AMY".into()],
+        };
+        assert_eq!(spec.fingerprint(), "vpfc_mpfc_amy:PFCm,PFCv|AMY");
+    }
+
+    #[test]
+    fn fingerprint_appends_sorted_networks_when_set() {
+        let spec = RoiSelectionSpec {
+            name: "limbic_pfc".into(),
+            cortical_regions: vec!["PFCm".into()],
+            cortical_networks: vec!["LimbicB".into(), "LimbicA".into()],
+            subcortical_regions: vec![],
+        };
+        assert_eq!(spec.fingerprint(), "limbic_pfc:PFCm||net=LimbicA,LimbicB");
+    }
+
+    #[test]
+    fn is_empty_requires_all_three_lists_empty() {
+        let mut spec = RoiSelectionSpec::default();
+        assert!(spec.is_empty());
+        spec.cortical_networks = vec!["LimbicA".into()];
+        assert!(!spec.is_empty());
+    }
 }

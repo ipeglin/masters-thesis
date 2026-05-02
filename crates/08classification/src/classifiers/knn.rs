@@ -94,6 +94,9 @@ pub struct KNN {
     train_y: Vec<i32>,
     feat_dim: Option<usize>,
     whitening: Option<Whitening>,
+    /// Sorted ascending unique class labels seen in `fit`. Defines column order
+    /// of `predict_proba` output so callers don't have to guess.
+    classes: Vec<i32>,
 }
 
 impl KNN {
@@ -104,7 +107,14 @@ impl KNN {
             train_y: Vec::new(),
             feat_dim: None,
             whitening: None,
+            classes: Vec::new(),
         }
+    }
+
+    /// Sorted ascending class labels seen during `fit`. Column order of
+    /// `predict_proba` matches this slice.
+    pub fn classes(&self) -> &[i32] {
+        &self.classes
     }
 
     pub fn config(&self) -> &KnnConfig {
@@ -168,10 +178,15 @@ impl KNN {
             _ => (x, None),
         };
 
+        let mut classes: Vec<i32> = y.iter().copied().collect();
+        classes.sort_unstable();
+        classes.dedup();
+
         self.train_x = train_x;
         self.train_y = y;
         self.feat_dim = Some(dim);
         self.whitening = whitening;
+        self.classes = classes;
         Ok(())
     }
 
@@ -238,6 +253,98 @@ impl KNN {
 
     pub fn predict_batch(&self, xs: &[Vec<f32>]) -> Result<Vec<i32>> {
         xs.iter().map(|x| self.predict(x)).collect()
+    }
+
+    /// Vote-share probability over `self.classes()`. Length and column order
+    /// match `classes()`. Sums to 1.
+    ///
+    /// With `distance_weighted = false` this is the fraction of the k nearest
+    /// neighbors voting each class — quantised to multiples of `1/k`.
+    /// With `distance_weighted = true` it is the `1/(d + ε)`-weighted vote
+    /// share, which is smoother and usually better-calibrated near the
+    /// decision boundary.
+    pub fn predict_proba(&self, x: &[f32]) -> Result<Vec<f32>> {
+        let Some(dim) = self.feat_dim else {
+            bail!("predict_proba: model not fitted");
+        };
+        if x.len() != dim {
+            bail!(
+                "predict_proba: feature dim mismatch ({} vs {})",
+                x.len(),
+                dim
+            );
+        }
+        if self.classes.is_empty() {
+            bail!("predict_proba: no classes seen during fit");
+        }
+
+        let effective_metric = match self.config.metric {
+            DistanceMetric::Mahalanobis | DistanceMetric::MahalanobisDiag => {
+                DistanceMetric::Euclidean
+            }
+            m => m,
+        };
+
+        let query_owned: Vec<f32>;
+        let query: &[f32] = match &self.whitening {
+            Some(w) => {
+                query_owned = whiten_vector(x, w);
+                &query_owned
+            }
+            None => x,
+        };
+
+        let mut dists: Vec<(f32, i32)> = self
+            .train_x
+            .iter()
+            .zip(self.train_y.iter())
+            .map(|(row, &y)| (distance(query, row, effective_metric), y))
+            .collect();
+
+        let k = self.config.num_neighbors;
+        dists.select_nth_unstable_by(k - 1, |a, b| {
+            a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let neighbors = &dists[..k];
+
+        let mut weights: Vec<f32> = vec![0.0; self.classes.len()];
+        let mut total = 0.0f32;
+        for &(d, y) in neighbors {
+            let w = if self.config.distance_weighted {
+                1.0 / (d + 1e-8)
+            } else {
+                1.0
+            };
+            if let Ok(idx) = self.classes.binary_search(&y) {
+                weights[idx] += w;
+                total += w;
+            }
+        }
+
+        if !total.is_finite() || total <= 0.0 {
+            // Non-finite distances (NaN/Inf inputs upstream, e.g. all-zero
+            // post-normalisation rows that hit Cosine's 0/0 path) make the
+            // weighted vote uninterpretable. Fall back to a uniform prior
+            // over classes so downstream metrics see a finite probability
+            // rather than NaN — which previously caused `roc_curve` to spin
+            // its tie-grouping loop indefinitely.
+            let p = 1.0 / self.classes.len() as f32;
+            return Ok(vec![p; self.classes.len()]);
+        }
+        for w in &mut weights {
+            *w /= total;
+        }
+        // Final sanity pass: any residual non-finite entry collapses to the
+        // same uniform fallback.
+        if weights.iter().any(|w| !w.is_finite()) {
+            let p = 1.0 / self.classes.len() as f32;
+            return Ok(vec![p; self.classes.len()]);
+        }
+        Ok(weights)
+    }
+
+    pub fn predict_proba_batch(&self, xs: &[Vec<f32>]) -> Result<Vec<Vec<f32>>> {
+        xs.iter().map(|x| self.predict_proba(x)).collect()
     }
 }
 
@@ -607,6 +714,60 @@ mod tests {
 
         assert_eq!(knn.predict(&[0.5, 0.5]).unwrap(), 0);
         assert_eq!(knn.predict(&[5.5, 5.5]).unwrap(), 1);
+    }
+
+    #[test]
+    fn predict_proba_unweighted_is_vote_share() {
+        let x = vec![
+            vec![0.0, 0.0],
+            vec![0.1, 0.0],
+            vec![0.0, 0.1],
+            vec![10.0, 10.0],
+            vec![10.1, 10.0],
+            vec![10.0, 10.1],
+        ];
+        let y = vec![0, 0, 0, 1, 1, 1];
+        let mut knn = KNN::new(KnnConfig {
+            num_neighbors: 3,
+            metric: DistanceMetric::Euclidean,
+            distance_weighted: false,
+            mahalanobis_shrinkage: 1e-3,
+        });
+        knn.fit(x, y).unwrap();
+        assert_eq!(knn.classes(), &[0, 1]);
+
+        let p = knn.predict_proba(&[0.05, 0.05]).unwrap();
+        assert!((p[0] - 1.0).abs() < 1e-6, "p0 = {}", p[0]);
+        assert!((p[1] - 0.0).abs() < 1e-6);
+
+        let p = knn.predict_proba(&[10.0, 10.0]).unwrap();
+        assert!((p[1] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn predict_proba_distance_weighted_is_smooth() {
+        // Boundary point closer to class 0 cluster but inside class 1 vote.
+        let x = vec![
+            vec![0.0, 0.0],
+            vec![0.0, 0.5],
+            vec![0.0, 5.0],
+            vec![0.0, 5.5],
+        ];
+        let y = vec![0, 0, 1, 1];
+        let mut knn = KNN::new(KnnConfig {
+            num_neighbors: 3,
+            metric: DistanceMetric::Euclidean,
+            distance_weighted: true,
+            mahalanobis_shrinkage: 1e-3,
+        });
+        knn.fit(x, y).unwrap();
+
+        let p = knn.predict_proba(&[0.0, 1.0]).unwrap();
+        // Class 0 dominates because the two class-0 points are much closer.
+        assert!(p[0] > p[1]);
+        // But not 0/1 — distance weighting keeps both nonzero.
+        assert!(p[1] > 0.0 && p[0] < 1.0);
+        assert!((p[0] + p[1] - 1.0).abs() < 1e-6);
     }
 
     #[test]

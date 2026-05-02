@@ -5,13 +5,13 @@ pub mod strategies;
 
 use std::{collections::BTreeMap, fs, path::PathBuf, time::Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tch::Tensor;
 use tracing::{info, warn};
-use utils::atlas::BrainAtlas;
-use utils::bids_filename::BidsFilename;
+use utils::bids_filename::{BidsFilename, sort_bids_vec};
 use utils::bids_subject_id::BidsSubjectId;
 use utils::config::AppConfig;
+use utils::{atlas::BrainAtlas, bids_filename::filter_directory_bids_files};
 
 pub use feature_extractor::FeatureExtractor;
 pub use strategies::{AnalysisCtx, FeatureSrc};
@@ -36,7 +36,9 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
     let weights_path = cfg.feature_extraction.cnn_weights_path.as_deref();
     let extractor = FeatureExtractor::new(weights_path, 1)?;
     match weights_path {
-        Some(p) => info!(weights = %p.display(), "DenseNet-201 initialised with pretrained weights"),
+        Some(p) => {
+            info!(weights = %p.display(), "DenseNet-201 initialised with pretrained weights")
+        }
         None => info!("DenseNet-201 initialised with random weights"),
     }
 
@@ -108,26 +110,46 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
         )
         .entered();
 
-        let files: Vec<PathBuf> = fs::read_dir(dir)?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("h5"))
-            .collect();
+        let mut files: Vec<BidsFilename> = filter_directory_bids_files(dir, |bids| {
+            let task = bids.get("task");
+            task == Some("restAP") || task == Some("hammerAP")
+        })
+        .expect("Failed to read the directory");
+
+        sort_bids_vec(&mut files, &["task", "run"], |key, a, b| {
+            match key {
+                "task" => {
+                    // Define specific order for tasks
+                    let priority = |v| match v {
+                        "restAP" => 0,
+                        "hammerAP" => 1,
+                        _ => 2,
+                    };
+                    priority(a).cmp(&priority(b))
+                }
+                _ => {
+                    // Default to standard lexicographical sort (works for padded "run" numbers)
+                    a.cmp(b)
+                }
+            }
+        });
 
         info!(num_files = files.len(), "processing subject");
 
-        for file_path in &files {
-            let _file_span = tracing::info_span!("file", file = %file_path.display()).entered();
+        for file in &files {
+            let path = file
+                .try_to_path_buf()
+                .context("BidsFilename has no path associated with it")?;
+            let _file_span = tracing::info_span!("file", file = %path.display()).entered();
 
             let result: Result<()> = (|| {
-                let bids =
-                    BidsFilename::parse(match file_path.file_name().and_then(|n| n.to_str()) {
-                        Some(name) => name,
-                        None => return Ok(()),
-                    });
+                let bids = BidsFilename::parse(match path.file_name().and_then(|n| n.to_str()) {
+                    Some(name) => name,
+                    None => return Ok(()),
+                });
                 let task_name = bids.get("task").unwrap_or("unknown");
 
-                let h5_file = utils::hdf5_io::open_or_create(file_path)?;
+                let h5_file = hdf5::File::open_rw(&path)?;
                 let ctx = AnalysisCtx {
                     extractor: &extractor,
                     fit: cfg.feature_extraction.image_fit,
@@ -147,7 +169,7 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
 
             if let Err(e) = result {
                 error_count += 1;
-                warn!(file = %file_path.display(), error = %e, "skipping file due to error");
+                warn!(file = %path.display(), error = %e, "skipping file due to error");
             }
         }
     }

@@ -1,5 +1,6 @@
 use std::{
-    fs,
+    cmp::Ordering,
+    fmt, fs,
     path::{Path, PathBuf},
 };
 
@@ -28,6 +29,15 @@ impl Default for BidsFilename {
             path: None,
             parent_directory: None,
         }
+    }
+}
+
+impl fmt::Display for BidsFilename {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // self.to_path_buf() returns:
+        // - "path/to/file.nii.gz" if parent_directory is set
+        // - "file.nii.gz" if parent_directory is None
+        write!(f, "{}", self.to_path_buf().display())
     }
 }
 
@@ -251,12 +261,6 @@ impl BidsFilename {
     }
 }
 
-impl std::fmt::Display for BidsFilename {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_filename())
-    }
-}
-
 /// Find all regular files directly under `dir` whose BIDS filename matches all
 /// `required_pairs`, an optional `suffix`, and an optional file `extension`.
 ///
@@ -298,6 +302,53 @@ fn strip_bids_extension(s: &str) -> (&str, &str) {
         return (&s[..idx], &s[idx..]);
     }
     (s, "")
+}
+
+pub fn filter_directory_bids_files<F>(
+    dir: &Path,
+    predicate: F,
+) -> Result<Vec<BidsFilename>, Box<dyn std::error::Error>>
+where
+    F: Fn(&BidsFilename) -> bool,
+{
+    let files = fs::read_dir(dir)?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter_map(|path| {
+            let bids = BidsFilename::from_path_buf(&path);
+            if predicate(&bids) { Some(bids) } else { None }
+        })
+        .collect();
+
+    Ok(files)
+}
+
+pub fn sort_bids_vec<F>(files: &mut [BidsFilename], sort_keys: &[&str], custom_compare: F)
+where
+    F: Fn(&str, &str, &str) -> Ordering,
+    // Arguments: (key, value_a, value_b)
+{
+    files.sort_by(|a, b| {
+        for &key in sort_keys {
+            let val_a = a.get(key);
+            let val_b = b.get(key);
+
+            match (val_a, val_b) {
+                (Some(v_a), Some(v_b)) => {
+                    let res = custom_compare(key, v_a, v_b);
+                    if res != Ordering::Equal {
+                        return res;
+                    }
+                }
+                // Handle cases where one file is missing a key
+                (Some(_), None) => return Ordering::Less,
+                (None, Some(_)) => return Ordering::Greater,
+                (None, None) => continue,
+            }
+        }
+        Ordering::Equal
+    });
 }
 
 #[cfg(test)]
