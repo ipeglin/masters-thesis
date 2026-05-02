@@ -12,6 +12,17 @@ use utils::hdf5_io::{open_or_create, open_or_create_group, write_dataset};
 
 use scirs2_signal::wavelets::{complex_morlet, scalogram};
 
+// HDF5 groups and datasets
+const CWT_CRATE_GROUP: &str = "03cwt";
+const FULL_RUN_DATASET: &str = "full_run_std";
+const BLOCKS_GROUP: &str = "blocks_std";
+
+const TARGET_TRIAL_TYPES: &[&str] = &["face"];
+
+// Other params
+const ANGULAR_FREQ: f64 = 6.0; // Angular center frequency
+const NUM_SCALES: usize = 224; // DenseNet201 height
+
 /// Compute the CWT scalogram (squared magnitude) for each channel using the complex Morlet wavelet.
 ///
 /// Returns a flat row-major buffer and the 3D shape `[n_channels, n_scales, n_timepoints]`.
@@ -29,12 +40,11 @@ fn cwt_scalogram(signal: &Array2<f64>) -> (Vec<f64>, [usize; 3]) {
     //
     // Log-spacing is used because BOLD dynamics span two decades. Linear spacing
     // would oversample the high-frequency end and undersample the low end.
-    let tr: f64 = 0.8;
-    let w0: f64 = 6.0;
-    let f_min: f64 = frequency_bands::f_min();
-    let f_max: f64 = frequency_bands::f_max();
-    let n_scales: usize = 224; // input height of DenseNet201
-    let scales: Vec<f64> = (0..n_scales)
+    let tr: f64 = 1.0 / cfg.task_sampling_rate; // Your sampling period (1/fs)
+    let f_min: f64 = frequency_bands::f_min(); // Target min frequency in Hz
+    let f_max: f64 = frequency_bands::f_max(); // Target max frequency in Hz
+
+    let scales: Vec<f64> = (0..NUM_SCALES)
         .map(|i| {
             // Linearly interpolate in log-space
             let f = f_min * (f_max / f_min).powf(i as f64 / (n_scales - 1) as f64);
