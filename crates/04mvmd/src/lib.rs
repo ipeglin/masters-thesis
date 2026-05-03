@@ -397,24 +397,27 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                     "no ROI selection configured, skipping ROI-only full-run MVMD"
                 );
             } else {
+                let fr_roi_group = mvmd_group.group(FULL_RUN_GROUP_ROI_STRATIFIED).with_context(|| {
+                    format!(
+                        "failed to open group /{MVMD_CRATE_GROUP}/{FULL_RUN_GROUP_ROI_STRATIFIED} for center_frequencies sync"
+                    )
+                })?;
+
+                // roi fingerprint config same as HDF5 attribute
+                let roi_fingerprint_unchanged = check_roi_fingerprint(
+                    &fr_roi_group,
+                    &roi_selection_fingerprint,
+                    &format!("/{MVMD_CRATE_GROUP}/{FULL_RUN_GROUP_ROI_STRATIFIED}"),
+                )
+                .is_ok();
                 let fr_roi_done = !cfg.force
+                    // already has MVMD results
                     && path_exists(
                         &mvmd_group,
                         format!("{FULL_RUN_GROUP_ROI_STRATIFIED}/center_frequencies").as_str(),
-                    );
+                    )
+                    && roi_fingerprint_unchanged;
                 if fr_roi_done {
-                    let fr_roi_group = mvmd_group.group(FULL_RUN_GROUP_ROI_STRATIFIED).with_context(|| {
-                        format!(
-                            "failed to open group /{MVMD_CRATE_GROUP}/{FULL_RUN_GROUP_ROI_STRATIFIED} for center_frequencies sync"
-                        )
-                    })?;
-
-                    check_roi_fingerprint(
-                        &fr_roi_group,
-                        &roi_selection_fingerprint,
-                        &format!("/{MVMD_CRATE_GROUP}/{FULL_RUN_GROUP_ROI_STRATIFIED}"),
-                    )?;
-
                     sync_center_frequencies_attr_from_group(&fr_roi_group).with_context(|| {
                         format!(
                             "failed to sync center_frequencies attribute to /{MVMD_CRATE_GROUP}/{FULL_RUN_GROUP_ROI_STRATIFIED}/modes"
@@ -875,25 +878,26 @@ pub fn run(cfg: &AppConfig) -> Result<()> {
                         "/{MVMD_CRATE_GROUP}/{ALL_BLOCKS_GROUP_ROI_STRATIFIED}/{trial_type}/{block_name}"
                     );
 
+                    let existing_block_group =
+                        h5_file.group(&output_block_name_path).with_context(|| {
+                            format!("failed to open existing output group {output_block_name_path}")
+                        })?;
+
+                    // roi fingerprint config same as HDF5 attribute
+                    let roi_fingerprint_unchanged = check_roi_fingerprint(
+                        &existing_block_group,
+                        &roi_selection_fingerprint,
+                        &output_block_name_path,
+                    )
+                    .is_ok();
                     let roi_block_already_done = !cfg.force
                         && path_exists(
                             &h5_file,
                             format!("{}/center_frequencies", output_block_name_path).as_str(),
-                        );
+                        )
+                        && roi_fingerprint_unchanged;
+
                     if roi_block_already_done {
-                        let existing_block_group =
-                            h5_file.group(&output_block_name_path).with_context(|| {
-                                format!(
-                                    "failed to open existing output group {output_block_name_path}"
-                                )
-                            })?;
-
-                        check_roi_fingerprint(
-                            &existing_block_group,
-                            &roi_selection_fingerprint,
-                            &output_block_name_path,
-                        )?;
-
                         sync_center_frequencies_attr_from_group(&existing_block_group)
                             .with_context(|| {
                                 format!(
